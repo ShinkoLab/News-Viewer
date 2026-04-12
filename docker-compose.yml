@@ -1,0 +1,12 @@
+services:
+  web:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: "file:/data/news_summarizer.db"
+    volumes:
+      # Mount the SQLite DB from the sibling project (read-only)
+      # Adjust the host path if needed when running on a different machine
+      - ../ai-news-summarizer/data:/data:ro
+    restart: unless-stopped
