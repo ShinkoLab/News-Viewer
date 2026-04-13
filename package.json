@@ -1,6 +1,6 @@
 {
-  "name": "ai-news-viewer-tmp",
-  "version": "0.1.0",
+  "name": "news-viewer",
+  "version": "1.0.1",
   "private": true,
   "scripts": {
     "dev": "next dev",
