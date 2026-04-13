@@ -63,4 +63,5 @@ Issue への対応は気まぐれです。
 
 ## ライセンス
 
-[ISC](LICENSE)
+本プロジェクトは [ISC](LICENSE) ライセンスの下で公開されています。
+利用しているサードパーティ製ライブラリの著作権表示およびライセンス全文については、[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) を参照してください。

@@ -53,6 +53,11 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 # Copy prisma-generated client (needed at runtime)
 COPY --from=builder --chown=nextjs:nodejs /app/src/generated ./src/generated
 
+# Copy license and notice files for compliance
+COPY --from=builder --chown=nextjs:nodejs /app/LICENSE ./LICENSE
+COPY --from=builder --chown=nextjs:nodejs /app/THIRD-PARTY-NOTICES.md ./THIRD-PARTY-NOTICES.md
+COPY --from=builder --chown=nextjs:nodejs /app/README.md ./README.md
+
 USER nextjs
 
 EXPOSE 3000
