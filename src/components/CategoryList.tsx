@@ -8,7 +8,7 @@ import UnfoldMoreIcon from "@mui/icons-material/UnfoldMore";
 import CategorySection from "./CategorySection";
 
 type Article = {
-  id: number;
+  id: string;
   summaryTitle: string;
   summaryText: string;
   keywords: string[];
@@ -95,7 +95,7 @@ export default function CategoryList({ categories, headingLevel }: Props) {
 
       {categories.map(({ category, articles }) => (
         <CategorySection
-          key={category}
+          key={`${category}-${override?.version ?? 0}`}
           category={category}
           articles={articles}
           openOverride={override}

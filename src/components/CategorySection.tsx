@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import Typography from "@mui/material/Typography";
 import Box from "@mui/material/Box";
 import ButtonBase from "@mui/material/ButtonBase";
@@ -10,7 +10,7 @@ import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ArticleCard from "./ArticleCard";
 
 type Article = {
-  id: number;
+  id: string;
   summaryTitle: string;
   summaryText: string;
   keywords: string[];
@@ -39,14 +39,8 @@ export default function CategorySection({
   openOverride,
   headingLevel = "h3",
 }: Props) {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(openOverride?.open ?? true);
   const contentId = `category-content-${category.replace(/\s+/g, "-")}`;
-
-  // グローバルな展開/折りたたみシグナルに同期
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => {
-    if (openOverride !== undefined) setOpen(openOverride.open);
-  }, [openOverride?.version]);
 
   return (
     <Box component="section" aria-label={`カテゴリ: ${category}`} sx={{ mb: 4 }}>

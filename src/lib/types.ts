@@ -1,5 +1,5 @@
 export type Article = {
-  id: number;
+  id: string;
   summaryTitle: string;
   summaryText: string;
   keywords: string[];

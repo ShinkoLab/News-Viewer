@@ -9,8 +9,7 @@ AI が収集・要約したニュース記事を閲覧するための Web アプ
 
 - **フレームワーク**: Next.js 16 (App Router, Standalone output)
 - **UI**: MUI v9 (Material Design) + Emotion
-- **ORM**: Prisma 7 + better-sqlite3
-- **DB**: SQLite
+- **DB**: Google Cloud Firestore（サーバー側SDK）
 - **言語**: TypeScript 5 / React 19
 - **コンテナ**: Docker / docker-compose
 
@@ -19,8 +18,7 @@ AI が収集・要約したニュース記事を閲覧するための Web アプ
 ### 前提条件
 
 - Node.js 22+
-- SQLite データベースファイル
-  - 別途 [ShinkoLab/News-Summarizer](https://github.com/ShinkoLab/News-Summarizer) で作成されたDBファイルが必要です。
+- Google Cloud SDK（実環境のFirestoreを使う場合）
 
 ### ローカル開発
 
@@ -30,16 +28,16 @@ npm install
 
 # 環境変数を設定
 cp .env.local.example .env.local
-# .env.local の DATABASE_URL を実際の SQLite ファイルパスに変更
 
-# Prisma クライアントを生成
-npx prisma generate
+# 別ターミナルでFirestoreエミュレーターを起動
+docker compose up firestore
 
 # 開発サーバーを起動
 npm run dev
 ```
 
-http://localhost:3000 でアクセスできます。
+http://localhost:3000 でアクセスできます。実際のFirestoreへ接続する場合は
+`GOOGLE_CLOUD_PROJECT`を設定し、`gcloud auth application-default login`を実行してください。
 
 ### Docker
 
@@ -47,7 +45,17 @@ http://localhost:3000 でアクセスできます。
 docker compose up --build
 ```
 
-`docker-compose.yml` 内の volumes マウントパスを環境に合わせて変更してください。
+Viewerは http://localhost:3080 で起動し、同じCompose内のFirestoreエミュレーターへ接続します。
+
+## Google Cloudへのデプロイ
+
+Cloud Run向けのコンテナは`Dockerfile`、Cloud Build設定は`cloudbuild.yaml`にあります。
+Firestore、Cloud Run、IAPを含む環境全体は、News-Summarizerリポジトリの
+`infra/`からTerraformで構築します。個人・家族利用を想定し、Cloud Runは最小インスタンス数を0、
+最大インスタンス数を1に制限しています。
+
+Cloud RunではApplication Default Credentialsが自動的に使われるため、
+サービスアカウント鍵ファイルをコンテナへ入れる必要はありません。
 
 ## 免責事項
 
@@ -64,4 +72,4 @@ Issue への対応は気まぐれです。
 ## ライセンス
 
 本プロジェクトは [ISC](LICENSE) ライセンスの下で公開されています。
-利用しているサードパーティ製ライブラリの著作権表示およびライセンス全文については、[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) を参照してください。
+利用しているサードパーティ製ライブラリとライセンスの一覧は、[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) を参照してください。

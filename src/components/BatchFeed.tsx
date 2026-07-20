@@ -24,7 +24,8 @@ export default function BatchFeed({ initialBatches, initialHasMore }: Props) {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/batches?skip=${batches.length}`);
+      const before = batches.at(-1)?.executedAt;
+      const res = await fetch(`/api/batches?before=${encodeURIComponent(before ?? "")}`);
       if (!res.ok) throw new Error(`fetch failed: ${res.status}`);
       const data: BatchesApiResponse = await res.json();
       setBatches((prev) => [...prev, ...data.batches]);
@@ -35,7 +36,7 @@ export default function BatchFeed({ initialBatches, initialHasMore }: Props) {
     } finally {
       setLoading(false);
     }
-  }, [loading, hasMore, batches.length]);
+  }, [loading, hasMore, batches]);
 
   return (
     <Box>
