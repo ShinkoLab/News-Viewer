@@ -1,6 +1,5 @@
 import {
   Firestore,
-  Timestamp,
   type DocumentData,
   type Query,
 } from "@google-cloud/firestore";
@@ -38,7 +37,12 @@ if (process.env.NODE_ENV !== "production") {
 }
 
 function asDate(value: unknown): Date {
-  if (value instanceof Timestamp) return value.toDate();
+  // Route Handler と Server Component で @google-cloud/firestore が別バンドルとして
+  // 重複ロードされることがあり、Timestamp クラスの実体が異なると instanceof が
+  // falseになるため、toDate の有無で判定する（dual package hazard対策）。
+  if (value && typeof value === "object" && typeof (value as { toDate?: unknown }).toDate === "function") {
+    return (value as { toDate: () => Date }).toDate();
+  }
   if (value instanceof Date) return value;
   if (typeof value === "string" || typeof value === "number") return new Date(value);
   throw new Error("Firestore batch has an invalid executed_at value");
