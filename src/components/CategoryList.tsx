@@ -6,21 +6,7 @@ import Button from "@mui/material/Button";
 import UnfoldLessIcon from "@mui/icons-material/UnfoldLess";
 import UnfoldMoreIcon from "@mui/icons-material/UnfoldMore";
 import CategorySection from "./CategorySection";
-
-type Article = {
-  id: string;
-  summaryTitle: string;
-  summaryText: string;
-  keywords: string[];
-  originalUrl: string | null;
-  originalTitle: string;
-  groupTopic: string | null;
-};
-
-type CategoryEntry = {
-  category: string;
-  articles: Article[];
-};
+import type { CategoryEntry } from "@/lib/types";
 
 type OverrideSignal = { open: boolean; version: number };
 

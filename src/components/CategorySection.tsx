@@ -8,16 +8,7 @@ import Divider from "@mui/material/Divider";
 import Collapse from "@mui/material/Collapse";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ArticleCard from "./ArticleCard";
-
-type Article = {
-  id: string;
-  summaryTitle: string;
-  summaryText: string;
-  keywords: string[];
-  originalUrl: string | null;
-  originalTitle: string;
-  groupTopic: string | null;
-};
+import type { Article } from "@/lib/types";
 
 type OverrideSignal = { open: boolean; version: number };
 
@@ -41,6 +32,8 @@ export default function CategorySection({
 }: Props) {
   const [open, setOpen] = useState(openOverride?.open ?? true);
   const contentId = `category-content-${category.replace(/\s+/g, "-")}`;
+  // カードは類似記事を束ねているので、枚数と記事数は一致しない。
+  const articleCount = articles.reduce((total, article) => total + article.sources.length, 0);
 
   return (
     <Box component="section" aria-label={`カテゴリ: ${category}`} sx={{ mb: 4 }}>
@@ -94,7 +87,9 @@ export default function CategorySection({
             lineHeight: 1.5,
           }}
         >
-          {articles.length}件
+          {articleCount > articles.length
+            ? `${articleCount}件 / ${articles.length}トピック`
+            : `${articleCount}件`}
         </Typography>
         <Divider sx={{ flex: 1 }} />
         {/* アイコンは装飾 — ButtonBase 全体がインタラクティブ要素 */}
@@ -132,6 +127,8 @@ export default function CategorySection({
               keywords={article.keywords}
               originalUrl={article.originalUrl}
               originalTitle={article.originalTitle}
+              groupTopic={article.groupTopic}
+              sources={article.sources}
             />
           ))}
         </Box>
