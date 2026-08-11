@@ -3,8 +3,10 @@ import Box from "@mui/material/Box";
 import Typography from "@mui/material/Typography";
 import Chip from "@mui/material/Chip";
 import { getBatch, hydrateBatches, listBatchHeaders } from "@/lib/db";
+import { getCategorySort } from "@/lib/categorySortServer";
 import DigestSection from "@/components/DigestSection";
 import CategoryList from "@/components/CategoryList";
+import CategorySortProvider from "@/components/CategorySortProvider";
 import BatchSidebar from "@/components/BatchSidebar";
 import SidebarLayout from "@/components/SidebarLayout";
 import { formatJapaneseDateTime } from "@/lib/format";
@@ -20,13 +22,14 @@ export default async function BatchPage({ params }: Props) {
   const batchId = Number(id);
   if (!Number.isSafeInteger(batchId) || batchId < 1) notFound();
 
-  const [batchRecord, allBatches] = await Promise.all([
+  const [batchRecord, allBatches, sort] = await Promise.all([
     getBatch(batchId),
     listBatchHeaders(),
+    getCategorySort(),
   ]);
   if (!batchRecord) notFound();
 
-  const [batch] = await hydrateBatches([batchRecord]);
+  const [batch] = await hydrateBatches([batchRecord], sort);
   const executedAt = new Date(batch.executedAt);
 
   return (
@@ -53,7 +56,9 @@ export default async function BatchPage({ params }: Props) {
       </Box>
 
       {batch.digestText && <DigestSection digestText={batch.digestText} />}
-      <CategoryList categories={batch.categories} headingLevel="h2" />
+      <CategorySortProvider mode={sort.mode} order={sort.order}>
+        <CategoryList categories={batch.categories} headingLevel="h2" showSortControl />
+      </CategorySortProvider>
     </SidebarLayout>
   );
 }

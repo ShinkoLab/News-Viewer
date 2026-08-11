@@ -4,6 +4,11 @@ import {
   type Query,
 } from "@google-cloud/firestore";
 import type { Article, ArticleSource, BatchWithArticles } from "@/lib/types";
+import {
+  DEFAULT_SORT_MODE,
+  sortCategories,
+  type CategorySort,
+} from "@/lib/categorySort";
 
 export type BatchRecord = {
   id: number;
@@ -119,10 +124,12 @@ async function listArticles(batchIds: number[]): Promise<ArticleRecord[]> {
     .collection("articleSummaries")
     .where("batch_id", "in", batchIds)
     .get();
+  // カテゴリの表示順はここでは決めない（hydrateBatches が sortCategories で確定する）。
+  // カテゴリのグルーピング自体は Map のキーが担うので、ここで必要なのは
+  // カテゴリ内のクラスタ順を実行ごとにぶれさせないことだけ。
   return snapshot.docs
     .map((doc) => mapArticle(doc.id, doc.data()))
     .sort((a, b) =>
-      a.category.localeCompare(b.category, "ja") ||
       (a.groupId ?? Number.MAX_SAFE_INTEGER) - (b.groupId ?? Number.MAX_SAFE_INTEGER) ||
       a.id.localeCompare(b.id)
     );
@@ -169,7 +176,10 @@ function collapseCluster(members: ArticleRecord[]): Article {
   };
 }
 
-export async function hydrateBatches(records: BatchRecord[]): Promise<BatchWithArticles[]> {
+export async function hydrateBatches(
+  records: BatchRecord[],
+  sort: CategorySort = { mode: DEFAULT_SORT_MODE, order: [] }
+): Promise<BatchWithArticles[]> {
   const articles = await listArticles(records.map((record) => record.id));
   const byBatch = new Map<number, Map<string, ArticleRecord[][]>>();
   for (const record of records) byBatch.set(record.id, new Map());
@@ -210,9 +220,12 @@ export async function hydrateBatches(records: BatchRecord[]): Promise<BatchWithA
     executedAt: record.executedAt.toISOString(),
     totalArticles: record.totalArticles,
     digestText: record.digestText,
-    categories: [...(byBatch.get(record.id) ?? new Map<string, ArticleRecord[][]>())].map(([category, clusters]) => ({
-      category,
-      articles: clusters.map(collapseCluster),
-    })),
+    categories: sortCategories(
+      [...(byBatch.get(record.id) ?? new Map<string, ArticleRecord[][]>())].map(([category, clusters]) => ({
+        category,
+        articles: clusters.map(collapseCluster),
+      })),
+      sort
+    ),
   }));
 }
