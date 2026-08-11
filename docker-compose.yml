@@ -18,6 +18,9 @@ services:
     environment:
       GOOGLE_CLOUD_PROJECT: "demo-news-summarizer"
       FIRESTORE_EMULATOR_HOST: "firestore:8080"
+      # 定義元は News-Summarizer/categories.yaml。本番は infra/main.tf が
+      # 同ファイルから生成して注入するので、ここだけ編集しても本番には効かない。
+      CATEGORY_ORDER: "AI・機械学習,テクノロジー,経済・ビジネス,政治・社会,事件・事故・災害,科学・環境,健康・ライフ,カルチャー"
     depends_on:
       - firestore
     restart: unless-stopped

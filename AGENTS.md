@@ -19,8 +19,7 @@ AI が収集・要約したニュース記事を閲覧するための Next.js �
 |---|---|
 | フレームワーク | Next.js 16.2.3（App Router） |
 | UI | MUI v9（Material Design）+ Emotion |
-| ORM | Prisma 7.x + `@prisma/adapter-better-sqlite3` |
-| DB | SQLite（`better-sqlite3` 経由） |
+| DB | Firestore（`@google-cloud/firestore` を直接利用。ORM は無し） |
 | 言語 | TypeScript 5 / React 19 |
 | ビルド | `output: "standalone"`、Turbopack 有効 |
 | 環境管理 | mise（`.mise.toml`） |
@@ -42,50 +41,40 @@ src/
     ThemeRegistry.tsx   # MUI + Emotion SSR セットアップ（Client Component）
     SidebarLayout.tsx   # 2ペインレイアウト（アプリバー + ナビゲーションドロワー）
     BatchSidebar.tsx    # バッチ履歴リスト（ナビゲーションドロワー内容）
+    BatchFeed.tsx       # トップの無限スクロール（Client Component）
+    BatchExpansionPanel.tsx # フィード内の折りたたみバッチ
     DigestSection.tsx   # ダイジェスト表示カード
+    CategoryList.tsx    # カテゴリ一覧 + 一括展開/折りたたみツールバー
     CategorySection.tsx # カテゴリ別カードグリッド
+    CategorySortProvider.tsx # 並び順の Context と切り替え UI
     ArticleCard.tsx     # 個別記事カード
     BackButton.tsx      # 戻るボタン（未使用の可能性あり）
     BatchListItem.tsx   # バッチリストアイテム（未使用の可能性あり）
   lib/
-    db.ts               # Prisma クライアントシングルトン
+    db.ts               # Firestore クライアントと取得・整形ロジック
+    categorySort.ts     # カテゴリ並び順の純粋関数（サーバ/クライアント共用）
+    categorySortServer.ts # Cookie と env から並び順を解決（サーバ専用）
+    types.ts            # 画面へ渡すデータ型
     theme.ts            # MUI テーマ定義（Indigo 500 プライマリカラー）
     format.ts           # 日付フォーマットユーティリティ
-  generated/
-    prisma/             # Prisma 自動生成クライアント（コミット対象外）
-prisma/
-  schema.prisma         # DB スキーマ定義
 ```
 
-## データベーススキーマ
+## データストア
 
-```prisma
-model batches {
-  id             Int                 @id
-  executed_at    DateTime
-  total_articles Int
-  digest_text    String?
-  article_summaries article_summaries[]
-}
+Firestore を `@google-cloud/firestore` で直接読む（ORM は挟まない）。書き込みは
+サマライザ側だけが行い、Viewer は読み取り専用。
 
-model article_summaries {
-  id             Int      @id
-  batch_id       Int
-  category       String
-  group_id       Int?
-  group_topic    String?
-  summary_title  String
-  summary_text   String
-  keywords       String   // JSON 文字列（string[]）
-  original_url   String?
-  original_title String
-  feed_title     String?  // 後から追加。移行前の記事には存在しない
-  ...
-}
-```
+| コレクション | 主なフィールド |
+|---|---|
+| `batches` | `id` / `executed_at` / `total_articles` / `digest_text` |
+| `articleSummaries` | `id` / `batch_id` / `category` / `group_id` / `group_topic` / `summary_title` / `summary_text` / `keywords` / `original_url` / `original_title` / `feed_title` |
 
-`keywords` は JSON 文字列。パース時は try/catch で空配列にフォールバックすること。
-`group_id` / `group_topic` の使い方は「類似記事の統合表示」を参照。
+- `keywords` は配列だが、移行前のデータは JSON 文字列。`mapArticle()` が両方を
+  受けて try/catch で空配列にフォールバックする
+- `feed_title` は後から追加。持たない記事は URL のホスト名にフォールバックする
+- `group_id` / `group_topic` の使い方は「類似記事の統合表示」を参照
+- `batches` は `executed_at` で `orderBy` するが、`articleSummaries` には
+  `orderBy` を付けず取得後にクライアント側で整列する
 
 ## 環境変数
 
@@ -93,19 +82,48 @@ model article_summaries {
 
 | 変数 | 説明 |
 |---|---|
-| `DATABASE_URL` | SQLite ファイルパス（例: `file:/data/news.db`） |
+| `GOOGLE_CLOUD_PROJECT` | Firestore のあるプロジェクト |
+| `FIRESTORE_DATABASE` | データベース ID（既定 `(default)`） |
+| `FIRESTORE_EMULATOR_HOST` | エミュレータ利用時のみ |
+| `CATEGORY_ORDER` | カテゴリの既定表示順（カンマ区切り）。「カテゴリの表示順」を参照 |
 
 ## 重要な設計上の注意
 
 ### Server Component / Client Component の境界
 
-- **データフェッチは Server Component で行う**。`batches/[id]/page.tsx` が Prisma クエリを実行し、props としてデータを子コンポーネントへ渡す。
+- **データフェッチは Server Component で行う**。`batches/[id]/page.tsx` が Firestore を読み、props としてデータを子コンポーネントへ渡す。
 - **MUI コンポーネントに関数を props として渡す場合は `"use client"` が必要**。`<Box component={Link}>` のように MUI Client Component に Next.js の `Link` 関数を渡すと "Functions cannot be passed directly to Client Components" エラーになる。該当コンポーネントに `"use client"` を付与して解決する。
 
-### Prisma クライアント
+### Firestore クライアント
 
-- `src/lib/db.ts` でシングルトンを管理。`DATABASE_URL` 環境変数が必須。
-- `better-sqlite3` アダプター経由のため `DATABASE_URL` の `file:` プレフィックスを除去して渡す。
+- `src/lib/db.ts` でシングルトンを管理。開発時は `globalThis` に載せて HMR での再生成を防ぐ。
+- Route Handler と Server Component で `@google-cloud/firestore` が別バンドルとして
+  重複ロードされ、`Timestamp` の `instanceof` が false になることがある。日付判定は
+  `asDate()` のように `toDate` の有無で行う（dual package hazard 対策）。
+
+### カテゴリの表示順
+
+**定義元は `News-Summarizer/categories.yaml` ただ1つ。Viewer にカテゴリ名を書かないこと。**
+本番では `News-Summarizer/infra/main.tf` が同ファイルを `yamldecode` し、Viewer の
+Cloud Run サービスへ `CATEGORY_ORDER`（カンマ区切り）として注入する。
+
+- `src/lib/categorySort.ts` — `sortCategories()` と純粋関数群。サーバとクライアントが
+  **同じ比較関数**を使うので、初回描画でハイドレーション不整合が起きない
+- `src/lib/categorySortServer.ts` — Cookie（`category_sort`）と `CATEGORY_ORDER` から
+  `CategorySort` を解決する。`next/headers` を import しているためサーバ専用
+- 並び順は `definition`（既定・定義順）/ `count`（実記事数の多い順）/ `name`（名前順）。
+  定義順で未定義のカテゴリ（`未分類` 等）は末尾に回す。これはサマライザ側の
+  ダイジェスト生成（`summarizer/digest.py`）と同じ規則
+- `CATEGORY_ORDER` 未設定なら定義順は名前順へ縮退する。ローカル開発でも壊れない
+- ユーザーの選択は **Cookie** に持つ。サーバ側で並べ替えてから返せるので初回描画の
+  ちらつきが出ない（`localStorage` は SSR 時に読めないため不可）。書き込みは
+  `CategorySortProvider` がクライアントで `document.cookie` に行う
+- 切り替え UI は**1ページに1つだけ**。バッチ詳細は `CategoryList` の
+  `showSortControl`、フィードは `BatchFeed` がページ単位で持つ。フィードには
+  `CategoryList` がバッチの数だけ並ぶため、状態は Context で共有する
+- **ダイジェスト本文は並べ替えられない**。`digest_text` はサマライザが定義順で生成した
+  一枚のテキストなので、`count` / `name` を選ぶと上のダイジェストと下のカードの並びが
+  食い違う。既定を `definition` にすることで通常時は一致する
 
 ### 類似記事の統合表示
 

@@ -6,6 +6,7 @@ import Button from "@mui/material/Button";
 import CircularProgress from "@mui/material/CircularProgress";
 import Typography from "@mui/material/Typography";
 import BatchExpansionPanel from "./BatchExpansionPanel";
+import { CategorySortSelect } from "./CategorySortProvider";
 import type { BatchWithArticles, BatchesApiResponse } from "@/lib/types";
 
 type Props = {
@@ -40,6 +41,11 @@ export default function BatchFeed({ initialBatches, initialHasMore }: Props) {
 
   return (
     <Box>
+      {/* 並び順は全バッチ共通なので、パネルごとではなくページ単位で1つ置く */}
+      <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 1 }}>
+        <CategorySortSelect />
+      </Box>
+
       {batches.map((batch, index) => (
         <BatchExpansionPanel
           key={batch.id}
