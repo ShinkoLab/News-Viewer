@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import Typography from "@mui/material/Typography";
 import Box from "@mui/material/Box";
 import ButtonBase from "@mui/material/ButtonBase";
@@ -8,16 +8,7 @@ import Divider from "@mui/material/Divider";
 import Collapse from "@mui/material/Collapse";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ArticleCard from "./ArticleCard";
-
-type Article = {
-  id: number;
-  summaryTitle: string;
-  summaryText: string;
-  keywords: string[];
-  originalUrl: string | null;
-  originalTitle: string;
-  groupTopic: string | null;
-};
+import type { Article } from "@/lib/types";
 
 type OverrideSignal = { open: boolean; version: number };
 
@@ -39,14 +30,10 @@ export default function CategorySection({
   openOverride,
   headingLevel = "h3",
 }: Props) {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(openOverride?.open ?? true);
   const contentId = `category-content-${category.replace(/\s+/g, "-")}`;
-
-  // グローバルな展開/折りたたみシグナルに同期
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => {
-    if (openOverride !== undefined) setOpen(openOverride.open);
-  }, [openOverride?.version]);
+  // カードは類似記事を束ねているので、枚数と記事数は一致しない。
+  const articleCount = articles.reduce((total, article) => total + article.sources.length, 0);
 
   return (
     <Box component="section" aria-label={`カテゴリ: ${category}`} sx={{ mb: 4 }}>
@@ -100,7 +87,9 @@ export default function CategorySection({
             lineHeight: 1.5,
           }}
         >
-          {articles.length}件
+          {articleCount > articles.length
+            ? `${articleCount}件 / ${articles.length}トピック`
+            : `${articleCount}件`}
         </Typography>
         <Divider sx={{ flex: 1 }} />
         {/* アイコンは装飾 — ButtonBase 全体がインタラクティブ要素 */}
@@ -138,6 +127,8 @@ export default function CategorySection({
               keywords={article.keywords}
               originalUrl={article.originalUrl}
               originalTitle={article.originalTitle}
+              groupTopic={article.groupTopic}
+              sources={article.sources}
             />
           ))}
         </Box>

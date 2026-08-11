@@ -79,11 +79,13 @@ model article_summaries {
   keywords       String   // JSON 文字列（string[]）
   original_url   String?
   original_title String
+  feed_title     String?  // 後から追加。移行前の記事には存在しない
   ...
 }
 ```
 
 `keywords` は JSON 文字列。パース時は try/catch で空配列にフォールバックすること。
+`group_id` / `group_topic` の使い方は「類似記事の統合表示」を参照。
 
 ## 環境変数
 
@@ -104,6 +106,26 @@ model article_summaries {
 
 - `src/lib/db.ts` でシングルトンを管理。`DATABASE_URL` 環境変数が必須。
 - `better-sqlite3` アダプター経由のため `DATABASE_URL` の `file:` プレフィックスを除去して渡す。
+
+### 類似記事の統合表示
+
+サマライザは取得ソースの違う同じニュースを embedding でクラスタリングし、
+`group_id` / `group_topic` を各記事に振って保存する。**記事レコード自体は統合されない**ので、
+Viewer が畳まないと同じニュースが記事の数だけカードとして並ぶ。
+
+- `hydrateBatches()`（`src/lib/db.ts`）が `(batchId, category, groupId)` 単位で
+  `ArticleRecord[]` にまとめ、`collapseCluster()` が1件の `Article` に畳む。
+  `sources` に全メンバーの出典が入る（代表が先頭、単独記事なら要素1）
+- **`groupId === null` は畳まない**。グルーピング失敗時のフォールバック値であり、
+  null どうしは無関係な記事。キーに記事 id を混ぜて必ず単独クラスタにする
+- 代表は要約本文が最も長いもの、同点は id 昇順。実行ごとに表示が入れ替わらないよう決定的にする
+- `ArticleCard` は `sources.length === 1` のとき従来の見た目を保ち、
+  複数のときだけ折りたたみのソース一覧に切り替える
+- `feedTitle` は後から追加したフィールド。持たない記事は URL のホスト名にフォールバックする
+- `CategorySection` の件数バッジはカード枚数ではなく**実記事数**（`sources.length` の合計）
+
+クラスタは「カテゴリ → group」で階層化されるため、カテゴリが割れているとクラスタも割れる。
+これはサマライザ側の `unify_group_categories()` が揃えている前提で、Viewer では補正しない。
 
 ### テーマ（Android L / Material Design 1 スタイル）
 

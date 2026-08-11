@@ -1,12 +1,23 @@
 services:
+  firestore:
+    image: gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators
+    command:
+      - gcloud
+      - emulators
+      - firestore
+      - start
+      - --host-port=0.0.0.0:8080
+      - --project=demo-news-summarizer
+    ports:
+      - "8080:8080"
+
   web:
     build: .
     ports:
-      - "3000:3000"
+      - "3080:3000"
     environment:
-      DATABASE_URL: "file:/data/news_summarizer.db"
-    volumes:
-      # Mount the SQLite DB from the sibling project (read-only)
-      # Adjust the host path if needed when running on a different machine
-      - ../ai-news-summarizer/data:/data:ro
+      GOOGLE_CLOUD_PROJECT: "demo-news-summarizer"
+      FIRESTORE_EMULATOR_HOST: "firestore:8080"
+    depends_on:
+      - firestore
     restart: unless-stopped
