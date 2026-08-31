@@ -21,8 +21,15 @@ let modulePromise: Promise<DbModule> | undefined;
 
 function loadImpl(): Promise<DbModule> {
   if (!modulePromise) {
-    modulePromise =
-      process.env.DB_BACKEND === "sqlite" ? import("@/lib/db.sqlite") : import("@/lib/db.firestore");
+    modulePromise = (
+      process.env.DB_BACKEND === "sqlite" ? import("@/lib/db.sqlite") : import("@/lib/db.firestore")
+    ).catch((error: unknown) => {
+      // 失敗した Promise をキャッシュしたままにすると、起動直後の一過性の問題
+      // （native addon の require 失敗など）が解消した後もずっと同じエラーで
+      // 失敗し続けてしまう。次回呼び出しで読み込みをやり直せるようにする。
+      modulePromise = undefined;
+      throw error;
+    });
   }
   return modulePromise;
 }

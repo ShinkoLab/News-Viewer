@@ -7,6 +7,16 @@ datasource db {
   provider = "sqlite"
 }
 
+// 注意: DateTime 列（executed_at / created_at / published_at / last_attempt_at）は
+// News-Summarizer（Python の sqlite3）が CURRENT_TIMESTAMP で
+// "YYYY-MM-DD HH:MM:SS"（スペース区切り、UTC）として書き込む。一方、Prisma の
+// better-sqlite3 アダプタは typed API（findMany の where 等）へ渡す JS Date を
+// "YYYY-MM-DDTHH:MM:SS.sssZ"（T区切り）に直列化してバインドする。SQLite は
+// DateTime 列を TEXT として辞書式比較するため、この typed API 経由の比較
+// （lt/gt/lte/gte）は書式の違いで壊れる（例: db.sqlite.ts の listBatchesPage が
+// この理由で datetime() 正規化した生SQLに切り替えている）。この列を比較条件に
+// 使う新しいクエリを書くときは同じ罠を踏まないよう datetime() 正規化を必ず行うこと。
+
 model article_summaries {
   id             Int       @id @default(autoincrement())
   batch_id       Int

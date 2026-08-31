@@ -10,6 +10,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY package.json package-lock.json ./
 # package.json の postinstall（prisma generate）がスキーマを必要とするため、
 # npm ci より前にコピーしておく（このステージではまだソース全体を COPY しない）。
+# ここで生成される src/generated/prisma はこのステージにしか存在せず
+# （下の builder ステージへは node_modules しか COPY しないため）使われないが、
+# 削っても npm ci の高速化にはならない一方、postinstall 自体は消せない
+# （消すと npm ci が「schema.prisma が無い」で失敗する）ので、無駄を承知で
+# そのままにしてある。実際にビルドで使われる生成物は builder ステージの
+# 明示的な `npx prisma generate`（下）が作る方。
 COPY prisma ./prisma
 COPY prisma.config.ts ./
 RUN npm ci
@@ -24,9 +30,10 @@ ENV NEXT_TELEMETRY_DISABLED=1
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
-# ビルド時点では実データベースは無いのでダミーの DATABASE_URL で prisma generate だけ行う
-# （実際の接続先は実行時に DB_BACKEND=sqlite の場合のみ DATABASE_URL 経由で渡される）
-ENV DATABASE_URL="file:./dev.db"
+# prisma/schema.prisma の datasource ブロックは url を持たない（接続先は実行時に
+# db.sqlite.ts が DATABASE_URL からアダプタへ直接渡す）ため、generate 自体は
+# DATABASE_URL 無しで完結する。ここで生成される src/generated/prisma が
+# 実際に runner ステージへコピーされる版になる。
 RUN --mount=type=cache,target=/root/.cache/prisma \
     npx prisma generate
 

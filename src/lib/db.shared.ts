@@ -16,6 +16,12 @@ export type ArticleRecord = Omit<Article, "sources"> & {
 };
 
 /**
+ * カテゴリが未設定/不正な記事のフォールバック表示名。
+ * News-Summarizer 側 categories.yaml の `fallback: 未分類` とそろえている。
+ */
+export const FALLBACK_CATEGORY = "未分類";
+
+/**
  * keywords の正規化。Firestore は配列（移行前データのみ JSON 文字列）、SQLite は
  * 常に JSON 文字列で保存されている。両実装の listArticles がここに一本化する。
  */
@@ -35,13 +41,25 @@ export function parseKeywords(raw: unknown): string[] {
 }
 
 /**
+ * 記事 id の昇順比較。Firestore の doc id は非連番の英数字文字列なので文字列比較で
+ * 問題ないが、SQLite の id は連番整数を文字列化したもの（"1","2",…,"10","11",…）
+ * であり、単純な文字列比較では "10" < "9" になってしまい昇順の意図が崩れる。
+ * 両方とも数値として解釈できる場合は数値で比較し、そうでなければ文字列比較に倒す。
+ */
+function compareIds(a: string, b: string): number {
+  const numA = Number(a);
+  const numB = Number(b);
+  if (Number.isFinite(numA) && Number.isFinite(numB)) return numA - numB;
+  return a.localeCompare(b);
+}
+
+/**
  * カテゴリ内でのクラスタ表示順の決定的な並び。group_id 昇順、無い場合は id 昇順。
  * 実行ごとに表示が入れ替わらないようにする（Firestore/SQLite 共通）。
  */
 export function compareArticleRecords(a: ArticleRecord, b: ArticleRecord): number {
   return (
-    (a.groupId ?? Number.MAX_SAFE_INTEGER) - (b.groupId ?? Number.MAX_SAFE_INTEGER) ||
-    a.id.localeCompare(b.id)
+    (a.groupId ?? Number.MAX_SAFE_INTEGER) - (b.groupId ?? Number.MAX_SAFE_INTEGER) || compareIds(a.id, b.id)
   );
 }
 
@@ -66,7 +84,7 @@ function toSource(article: ArticleRecord): ArticleSource {
 function collapseCluster(members: ArticleRecord[]): Article {
   const representative = members.reduce((best, candidate) =>
     candidate.summaryText.length > best.summaryText.length ||
-    (candidate.summaryText.length === best.summaryText.length && candidate.id < best.id)
+    (candidate.summaryText.length === best.summaryText.length && compareIds(candidate.id, best.id) < 0)
       ? candidate
       : best
   );

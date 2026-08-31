@@ -9,6 +9,7 @@ import {
   buildBatchesWithArticles,
   compareArticleRecords,
   parseKeywords,
+  FALLBACK_CATEGORY,
   type ArticleRecord,
   type BatchRecord,
 } from "@/lib/db.shared";
@@ -25,10 +26,11 @@ const globalForFirestore = globalThis as unknown as {
   firestore: Firestore | undefined;
 };
 
-// db.ts はバックエンドに関係なく db.firestore.ts と db.sqlite.ts を両方静的 import
-// するため、ここでモジュール読み込み時に Firestore クライアントを作ってしまうと
-// DB_BACKEND=sqlite の環境でも常に ADC 解決などの初期化コストが発生する。
-// 実際に呼ばれるまで生成を遅らせる（db.sqlite.ts の getPrisma() と同じ方針）。
+// モジュール読み込み時に即座に Firestore クライアントを作らず、実際に呼ばれる
+// まで生成を遅らせる（db.sqlite.ts の getPrisma() と同じ方針）。db.ts は
+// DB_BACKEND に応じてこのモジュールを動的 import するだけなので普段は問題に
+// ならないが、HMR や将来の呼び出し経路の変化に対しても ADC 解決などの
+// 初期化コストを本当に必要になるまで発生させない、という安全側の設計にしておく。
 function getFirestore(): Firestore {
   if (!globalForFirestore.firestore) {
     globalForFirestore.firestore = createFirestore();
@@ -61,7 +63,7 @@ function mapArticle(id: string, data: DocumentData): ArticleRecord {
   return {
     id: String(data.id ?? id),
     batchId: Number(data.batch_id),
-    category: String(data.category ?? "未分類"),
+    category: String(data.category ?? FALLBACK_CATEGORY),
     groupId: typeof data.group_id === "number" ? data.group_id : null,
     groupTopic: typeof data.group_topic === "string" ? data.group_topic : null,
     summaryTitle: String(data.summary_title ?? ""),

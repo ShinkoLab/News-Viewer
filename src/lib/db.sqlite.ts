@@ -6,6 +6,7 @@ import {
   buildBatchesWithArticles,
   compareArticleRecords,
   parseKeywords,
+  FALLBACK_CATEGORY,
   type ArticleRecord,
   type BatchRecord,
 } from "@/lib/db.shared";
@@ -32,15 +33,41 @@ const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined;
 };
 
-// db.ts はバックエンドに関係なく db.firestore.ts と db.sqlite.ts を両方静的 import
-// するため、ここでモジュール読み込み時に Prisma クライアントを作ってしまうと
-// DB_BACKEND=sqlite でない環境（DATABASE_URL 未設定）でも即座に例外になる。
-// 実際に呼ばれるまで生成を遅らせる。
+// モジュール読み込み時に即座に Prisma クライアントを作らず、実際に呼ばれるまで
+// 生成を遅らせる。db.ts は DB_BACKEND に応じてこのモジュールを動的 import する
+// だけなので普段は問題にならないが、DATABASE_URL 未設定のまま何らかの経路で
+// このモジュールが読み込まれても、実際にクエリを呼ぶまでは例外にならないように
+// しておく（db.firestore.ts の getFirestore() と同じ方針）。
 function getPrisma(): PrismaClient {
   if (!globalForPrisma.prisma) {
     globalForPrisma.prisma = createPrismaClient();
   }
   return globalForPrisma.prisma;
+}
+
+// readonly: true で開くと SQLITE_OPEN_CREATE が付かないため、News-Summarizer が
+// まだ一度もパイプラインを実行しておらず DB ファイル自体が存在しない状態（例えば
+// Docker Compose を初回起動した直後）だと "unable to open database file" で
+// 例外になる。Firestore 版が「バッチ0件」を普通に返せるのと同じ土俵に揃えるため、
+// このケースだけは空データとして扱う（それ以外の DB エラーはそのまま投げる）。
+function isMissingDatabaseFileError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return (
+    error.message.includes("unable to open database file") ||
+    error.message.includes("SQLITE_CANTOPEN") ||
+    // マウント先ディレクトリごと存在しない場合（named volume 未マウント等）は
+    // better-sqlite3 が別の文言の TypeError を投げる。
+    error.message.includes("Cannot open database because the directory does not exist")
+  );
+}
+
+async function withMissingDbFallback<T>(run: () => Promise<T>, fallback: T): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    if (isMissingDatabaseFileError(error)) return fallback;
+    throw error;
+  }
 }
 
 type BatchRow = {
@@ -77,7 +104,7 @@ function toArticleRecord(row: ArticleRow): ArticleRecord {
   return {
     id: String(row.id),
     batchId: row.batch_id,
-    category: row.category ?? "未分類",
+    category: row.category ?? FALLBACK_CATEGORY,
     groupId: row.group_id,
     groupTopic: row.group_topic,
     summaryTitle: row.summary_title,
@@ -92,15 +119,24 @@ function toArticleRecord(row: ArticleRow): ArticleRecord {
 }
 
 export async function listBatchHeaders(limit = 30) {
-  const rows = await getPrisma().batches.findMany({
-    orderBy: { executed_at: "desc" },
-    take: limit,
-    select: { id: true, executed_at: true },
-  });
-  return rows.map((row) => ({ id: row.id, executed_at: row.executed_at }));
+  return withMissingDbFallback(async () => {
+    const rows = await getPrisma().batches.findMany({
+      orderBy: { executed_at: "desc" },
+      take: limit,
+      select: { id: true, executed_at: true },
+    });
+    return rows.map((row) => ({ id: row.id, executed_at: row.executed_at }));
+  }, []);
 }
 
 export async function listBatchesPage(limit: number, before?: Date) {
+  return withMissingDbFallback(() => listBatchesPageInternal(limit, before), {
+    records: [],
+    hasMore: false,
+  });
+}
+
+async function listBatchesPageInternal(limit: number, before?: Date) {
   let rows: BatchRow[];
   if (before) {
     // SQLite の executed_at は News-Summarizer が CURRENT_TIMESTAMP で書き込む
@@ -117,16 +153,19 @@ export async function listBatchesPage(limit: number, before?: Date) {
     const idRows = await getPrisma().$queryRaw<{ id: number }[]>`
       SELECT id FROM batches
       WHERE datetime(executed_at) < datetime(${before.toISOString()})
-      ORDER BY executed_at DESC
+      ORDER BY executed_at DESC, id DESC
       LIMIT ${limit + 1}
     `;
     rows = await getPrisma().batches.findMany({
       where: { id: { in: idRows.map((row) => row.id) } },
-      orderBy: { executed_at: "desc" },
+      // News-Summarizer の CURRENT_TIMESTAMP は秒精度なので、短時間に複数バッチが
+      // 生成されると executed_at が完全に一致しうる。id を副次キーにして、
+      // ページをまたいでも順序が安定するようにする。
+      orderBy: [{ executed_at: "desc" }, { id: "desc" }],
     });
   } else {
     rows = await getPrisma().batches.findMany({
-      orderBy: { executed_at: "desc" },
+      orderBy: [{ executed_at: "desc" }, { id: "desc" }],
       take: limit + 1,
     });
   }
@@ -135,12 +174,18 @@ export async function listBatchesPage(limit: number, before?: Date) {
 }
 
 export async function getBatch(batchId: number): Promise<BatchRecord | null> {
-  const row = await getPrisma().batches.findUnique({ where: { id: batchId } });
-  return row ? toBatchRecord(row) : null;
+  return withMissingDbFallback(async () => {
+    const row = await getPrisma().batches.findUnique({ where: { id: batchId } });
+    return row ? toBatchRecord(row) : null;
+  }, null);
 }
 
 async function listArticles(batchIds: number[]): Promise<ArticleRecord[]> {
   if (batchIds.length === 0) return [];
+  return withMissingDbFallback(() => listArticlesInternal(batchIds), []);
+}
+
+async function listArticlesInternal(batchIds: number[]): Promise<ArticleRecord[]> {
   const rows = await getPrisma().article_summaries.findMany({
     where: { batch_id: { in: batchIds } },
     // embedding は表示に使わず、記事数によってはサイズが大きいので読まない。

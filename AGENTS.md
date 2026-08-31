@@ -115,15 +115,16 @@ src/
 
 ### DB クライアントの初期化
 
-- `db.ts` は `db.firestore.ts` と `db.sqlite.ts` を**両方静的 import** して
-  `DB_BACKEND` で選ぶだけなので、どちらの環境でも両方のモジュールが評価される。
-  そのためモジュール読み込み時に Firestore/Prisma クライアントを即座に生成すると、
-  使わない側のバックエンドでも初期化コスト・エラーが発生してしまう
-  （例: `DB_BACKEND=sqlite` なのに `DATABASE_URL` 未設定で `db.firestore.ts` が
-  Firestore へ接続しようとする、逆に Firestore 環境で `DATABASE_URL` 未設定の
-  `db.sqlite.ts` が例外を投げる、等）。両実装とも「初回呼び出し時まで生成を遅らせる」
-  遅延初期化（`getFirestore()` / `getPrisma()`）にしてあるので、新しいバックエンドの
-  実装を足すときもこのパターンを踏襲すること
+- `db.ts` は `DB_BACKEND` に応じて `db.firestore.ts` / `db.sqlite.ts` を**動的
+  import**（`import("@/lib/db.sqlite")` 等）し、選ばれなかった側のモジュールは
+  読み込まれない。これは選ばれなかった側の重い依存（Firestore SDK や
+  `@prisma/adapter-better-sqlite3` のようにモジュール本体が import 時点で
+  ネイティブアドオンを require するパッケージ）まで評価されるのを避けるため
+  （`db.ts` 内のコメント参照）。選ばれた側のモジュール自体も、実際に import
+  されるのは `db.ts` の関数が最初に呼ばれた時点であり、Firestore/Prisma クライアント
+  の生成自体もそこからさらに「初回クエリ時まで」遅らせる遅延初期化
+  （`getFirestore()` / `getPrisma()`）にしてある。新しいバックエンドの実装を
+  足すときもこのパターンを踏襲すること
 - どちらも開発時は `globalThis` にシングルトンを載せて HMR での再生成を防ぐ
 - Route Handler と Server Component で `@google-cloud/firestore` が別バンドルとして
   重複ロードされ、`Timestamp` の `instanceof` が false になることがある。日付判定は
