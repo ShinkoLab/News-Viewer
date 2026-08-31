@@ -15,6 +15,36 @@ export type ArticleRecord = Omit<Article, "sources"> & {
   feedTitle: string | null;
 };
 
+/**
+ * keywords の正規化。Firestore は配列（移行前データのみ JSON 文字列）、SQLite は
+ * 常に JSON 文字列で保存されている。両実装の listArticles がここに一本化する。
+ */
+export function parseKeywords(raw: unknown): string[] {
+  if (Array.isArray(raw)) {
+    return raw.filter((value): value is string => typeof value === "string");
+  }
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string") : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+/**
+ * カテゴリ内でのクラスタ表示順の決定的な並び。group_id 昇順、無い場合は id 昇順。
+ * 実行ごとに表示が入れ替わらないようにする（Firestore/SQLite 共通）。
+ */
+export function compareArticleRecords(a: ArticleRecord, b: ArticleRecord): number {
+  return (
+    (a.groupId ?? Number.MAX_SAFE_INTEGER) - (b.groupId ?? Number.MAX_SAFE_INTEGER) ||
+    a.id.localeCompare(b.id)
+  );
+}
+
 function toSource(article: ArticleRecord): ArticleSource {
   return {
     id: article.id,

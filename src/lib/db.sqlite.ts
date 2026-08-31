@@ -2,7 +2,13 @@ import { PrismaClient } from "@/generated/prisma/client";
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import type { BatchWithArticles } from "@/lib/types";
 import { DEFAULT_SORT_MODE, type CategorySort } from "@/lib/categorySort";
-import { buildBatchesWithArticles, type ArticleRecord, type BatchRecord } from "@/lib/db.shared";
+import {
+  buildBatchesWithArticles,
+  compareArticleRecords,
+  parseKeywords,
+  type ArticleRecord,
+  type BatchRecord,
+} from "@/lib/db.shared";
 
 function createPrismaClient() {
   const dbUrl = process.env.DATABASE_URL;
@@ -42,15 +48,6 @@ function toBatchRecord(row: BatchRow): BatchRecord {
     totalArticles: row.total_articles,
     digestText: row.digest_text,
   };
-}
-
-function parseKeywords(raw: string): string[] {
-  try {
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string") : [];
-  } catch {
-    return [];
-  }
 }
 
 type ArticleRow = {
@@ -117,12 +114,7 @@ async function listArticles(batchIds: number[]): Promise<ArticleRecord[]> {
   // カテゴリの表示順はここでは決めない（hydrateBatches が sortCategories で確定する）。
   // カテゴリのグルーピング自体は Map のキーが担うので、ここで必要なのは
   // カテゴリ内のクラスタ順を実行ごとにぶれさせないことだけ（Firestore版と同じ方針）。
-  return rows
-    .map(toArticleRecord)
-    .sort((a, b) =>
-      (a.groupId ?? Number.MAX_SAFE_INTEGER) - (b.groupId ?? Number.MAX_SAFE_INTEGER) ||
-      a.id.localeCompare(b.id)
-    );
+  return rows.map(toArticleRecord).sort(compareArticleRecords);
 }
 
 export async function hydrateBatches(

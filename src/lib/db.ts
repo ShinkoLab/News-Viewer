@@ -1,5 +1,5 @@
-import * as firestoreDb from "@/lib/db.firestore";
-import * as sqliteDb from "@/lib/db.sqlite";
+import type { CategorySort } from "@/lib/categorySort";
+import type { BatchRecord } from "@/lib/db.shared";
 
 export type { BatchRecord } from "@/lib/db.shared";
 
@@ -8,10 +8,41 @@ export type { BatchRecord } from "@/lib/db.shared";
  * SQLite（Prisma 経由）を使う。それ以外（未設定含む）は既定の Firestore（Cloud Run）。
  * News-Summarizer 側の `database.backend` 切り替え（outputs/database.py の
  * `create_database()`）と同じ発想。
+ *
+ * 両実装を静的 import すると、選ばれなかった側の重い依存（Firestore SDK /
+ * better-sqlite3 のネイティブバイナリ）までモジュール読み込み時に評価されて
+ * しまう（クライアント生成自体は遅延化していても、`@prisma/adapter-better-sqlite3`
+ * のようにモジュール本体が import 時点で native addon を require するパッケージも
+ * あるため）。動的 import で実際に選ばれた側だけを読み込む。
  */
-const impl = process.env.DB_BACKEND === "sqlite" ? sqliteDb : firestoreDb;
+type DbModule = typeof import("@/lib/db.firestore") | typeof import("@/lib/db.sqlite");
 
-export const listBatchHeaders = impl.listBatchHeaders;
-export const listBatchesPage = impl.listBatchesPage;
-export const getBatch = impl.getBatch;
-export const hydrateBatches = impl.hydrateBatches;
+let modulePromise: Promise<DbModule> | undefined;
+
+function loadImpl(): Promise<DbModule> {
+  if (!modulePromise) {
+    modulePromise =
+      process.env.DB_BACKEND === "sqlite" ? import("@/lib/db.sqlite") : import("@/lib/db.firestore");
+  }
+  return modulePromise;
+}
+
+export async function listBatchHeaders(limit?: number) {
+  const impl = await loadImpl();
+  return limit === undefined ? impl.listBatchHeaders() : impl.listBatchHeaders(limit);
+}
+
+export async function listBatchesPage(limit: number, before?: Date) {
+  const impl = await loadImpl();
+  return impl.listBatchesPage(limit, before);
+}
+
+export async function getBatch(batchId: number) {
+  const impl = await loadImpl();
+  return impl.getBatch(batchId);
+}
+
+export async function hydrateBatches(records: BatchRecord[], sort?: CategorySort) {
+  const impl = await loadImpl();
+  return impl.hydrateBatches(records, sort);
+}

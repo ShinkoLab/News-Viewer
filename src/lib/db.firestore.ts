@@ -5,7 +5,13 @@ import {
 } from "@google-cloud/firestore";
 import type { BatchWithArticles } from "@/lib/types";
 import { DEFAULT_SORT_MODE, type CategorySort } from "@/lib/categorySort";
-import { buildBatchesWithArticles, type ArticleRecord, type BatchRecord } from "@/lib/db.shared";
+import {
+  buildBatchesWithArticles,
+  compareArticleRecords,
+  parseKeywords,
+  type ArticleRecord,
+  type BatchRecord,
+} from "@/lib/db.shared";
 
 function createFirestore() {
   return new Firestore({
@@ -52,18 +58,6 @@ function mapBatch(id: string, data: DocumentData): BatchRecord {
 }
 
 function mapArticle(id: string, data: DocumentData): ArticleRecord {
-  let keywords: string[] = [];
-  if (Array.isArray(data.keywords)) {
-    keywords = data.keywords.filter((value: unknown): value is string => typeof value === "string");
-  } else if (typeof data.keywords === "string") {
-    try {
-      const parsed = JSON.parse(data.keywords);
-      if (Array.isArray(parsed)) keywords = parsed.filter((value): value is string => typeof value === "string");
-    } catch {
-      keywords = [];
-    }
-  }
-
   return {
     id: String(data.id ?? id),
     batchId: Number(data.batch_id),
@@ -72,7 +66,7 @@ function mapArticle(id: string, data: DocumentData): ArticleRecord {
     groupTopic: typeof data.group_topic === "string" ? data.group_topic : null,
     summaryTitle: String(data.summary_title ?? ""),
     summaryText: String(data.summary_text ?? ""),
-    keywords,
+    keywords: parseKeywords(data.keywords),
     originalUrl: typeof data.original_url === "string" ? data.original_url : null,
     originalTitle: String(data.original_title ?? ""),
     // feed_title は後から追加したフィールド。それ以前の記事には存在しない
@@ -115,12 +109,7 @@ async function listArticles(batchIds: number[]): Promise<ArticleRecord[]> {
   // カテゴリの表示順はここでは決めない（hydrateBatches が sortCategories で確定する）。
   // カテゴリのグルーピング自体は Map のキーが担うので、ここで必要なのは
   // カテゴリ内のクラスタ順を実行ごとにぶれさせないことだけ。
-  return snapshot.docs
-    .map((doc) => mapArticle(doc.id, doc.data()))
-    .sort((a, b) =>
-      (a.groupId ?? Number.MAX_SAFE_INTEGER) - (b.groupId ?? Number.MAX_SAFE_INTEGER) ||
-      a.id.localeCompare(b.id)
-    );
+  return snapshot.docs.map((doc) => mapArticle(doc.id, doc.data())).sort(compareArticleRecords);
 }
 
 export async function hydrateBatches(
