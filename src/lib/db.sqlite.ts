@@ -15,7 +15,16 @@ function createPrismaClient() {
   if (!dbUrl) throw new Error("DATABASE_URL is not set");
   // Strip the "file:" prefix for the adapter
   const url = dbUrl.replace(/^file:/, "") as ":memory:" | (string & object);
-  const adapter = new PrismaBetterSqlite3({ url });
+  const adapter = new PrismaBetterSqlite3({
+    url,
+    // Firestore 版と同じく「書き込みはサマライザ側だけ、Viewer は読み取り専用」という
+    // 前提を、Firestore の IAM 相当の技術的な強制として持たせる（SQLITE_READONLY で拒否）。
+    readonly: true,
+    // News-Summarizer 側は WAL / busy_timeout の設定をしていない（AGENTS.md 参照）ため、
+    // save_batch() の書き込み中に読みに行くと既定の 5000ms よりロック待ちが伸びうる。
+    // 少し余裕を持たせて "database is locked" を減らす（根絶はできない）。
+    timeout: 10000,
+  });
   return new PrismaClient({ adapter });
 }
 
@@ -92,11 +101,35 @@ export async function listBatchHeaders(limit = 30) {
 }
 
 export async function listBatchesPage(limit: number, before?: Date) {
-  const rows = await getPrisma().batches.findMany({
-    where: before ? { executed_at: { lt: before } } : undefined,
-    orderBy: { executed_at: "desc" },
-    take: limit + 1,
-  });
+  let rows: BatchRow[];
+  if (before) {
+    // SQLite の executed_at は News-Summarizer が CURRENT_TIMESTAMP で書き込む
+    // "YYYY-MM-DD HH:MM:SS"（スペース区切り）形式の TEXT だが、Prisma の
+    // typed API（下の findMany）に渡す JS Date は "...T...Z" 形式に直列化されて
+    // バインドされるため、素の `{ executed_at: { lt: before } }` はテキストの
+    // 辞書式比較が壊れて同日内の並びが誤る（'T'(0x54) は ' '(0x20) より常に
+    // 大きいので、同じ日なら常に "before" 側が辞書順で小さくなってしまう）。
+    // datetime() で両辺を正規化した生 SQL で対象 id だけを先に絞り込む。
+    //
+    // 注意: $queryRaw が返す行の executed_at 列はローカルタイムゾーンとして
+    // 誤って解釈される（typed API は正しく UTC 扱いする）ため、ここでは id の
+    // 抽出だけに使い、実データは必ず typed API で取り直す。
+    const idRows = await getPrisma().$queryRaw<{ id: number }[]>`
+      SELECT id FROM batches
+      WHERE datetime(executed_at) < datetime(${before.toISOString()})
+      ORDER BY executed_at DESC
+      LIMIT ${limit + 1}
+    `;
+    rows = await getPrisma().batches.findMany({
+      where: { id: { in: idRows.map((row) => row.id) } },
+      orderBy: { executed_at: "desc" },
+    });
+  } else {
+    rows = await getPrisma().batches.findMany({
+      orderBy: { executed_at: "desc" },
+      take: limit + 1,
+    });
+  }
   const records = rows.map(toBatchRecord);
   return { records: records.slice(0, limit), hasMore: records.length > limit };
 }
@@ -110,6 +143,20 @@ async function listArticles(batchIds: number[]): Promise<ArticleRecord[]> {
   if (batchIds.length === 0) return [];
   const rows = await getPrisma().article_summaries.findMany({
     where: { batch_id: { in: batchIds } },
+    // embedding は表示に使わず、記事数によってはサイズが大きいので読まない。
+    select: {
+      id: true,
+      batch_id: true,
+      category: true,
+      group_id: true,
+      group_topic: true,
+      summary_title: true,
+      summary_text: true,
+      keywords: true,
+      original_url: true,
+      original_title: true,
+      feed_title: true,
+    },
   });
   // カテゴリの表示順はここでは決めない（hydrateBatches が sortCategories で確定する）。
   // カテゴリのグルーピング自体は Map のキーが担うので、ここで必要なのは

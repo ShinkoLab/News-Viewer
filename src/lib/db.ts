@@ -29,7 +29,7 @@ function loadImpl(): Promise<DbModule> {
 
 export async function listBatchHeaders(limit?: number) {
   const impl = await loadImpl();
-  return limit === undefined ? impl.listBatchHeaders() : impl.listBatchHeaders(limit);
+  return impl.listBatchHeaders(limit);
 }
 
 export async function listBatchesPage(limit: number, before?: Date) {
