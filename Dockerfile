@@ -8,8 +8,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY package.json package-lock.json ./
-# prisma generate は builder ステージで明示的に走らせるので、npm install 中には不要
-ENV PRISMA_SKIP_POSTINSTALL_GENERATE=1
+# package.json の postinstall（prisma generate）がスキーマを必要とするため、
+# npm ci より前にコピーしておく（このステージではまだソース全体を COPY しない）。
+COPY prisma ./prisma
+COPY prisma.config.ts ./
 RUN npm ci
 
 # Stage 2: builder

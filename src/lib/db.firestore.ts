@@ -19,10 +19,15 @@ const globalForFirestore = globalThis as unknown as {
   firestore: Firestore | undefined;
 };
 
-export const firestore = globalForFirestore.firestore ?? createFirestore();
-
-if (process.env.NODE_ENV !== "production") {
-  globalForFirestore.firestore = firestore;
+// db.ts はバックエンドに関係なく db.firestore.ts と db.sqlite.ts を両方静的 import
+// するため、ここでモジュール読み込み時に Firestore クライアントを作ってしまうと
+// DB_BACKEND=sqlite の環境でも常に ADC 解決などの初期化コストが発生する。
+// 実際に呼ばれるまで生成を遅らせる（db.sqlite.ts の getPrisma() と同じ方針）。
+function getFirestore(): Firestore {
+  if (!globalForFirestore.firestore) {
+    globalForFirestore.firestore = createFirestore();
+  }
+  return globalForFirestore.firestore;
 }
 
 function asDate(value: unknown): Date {
@@ -77,7 +82,7 @@ function mapArticle(id: string, data: DocumentData): ArticleRecord {
 }
 
 export async function listBatchHeaders(limit = 30) {
-  const snapshot = await firestore
+  const snapshot = await getFirestore()
     .collection("batches")
     .orderBy("executed_at", "desc")
     .limit(limit)
@@ -89,7 +94,7 @@ export async function listBatchHeaders(limit = 30) {
 }
 
 export async function listBatchesPage(limit: number, before?: Date) {
-  let query: Query = firestore.collection("batches").orderBy("executed_at", "desc");
+  let query: Query = getFirestore().collection("batches").orderBy("executed_at", "desc");
   if (before) query = query.where("executed_at", "<", before);
   const snapshot = await query.limit(limit + 1).get();
   const records = snapshot.docs.map((doc) => mapBatch(doc.id, doc.data()));
@@ -97,13 +102,13 @@ export async function listBatchesPage(limit: number, before?: Date) {
 }
 
 export async function getBatch(batchId: number): Promise<BatchRecord | null> {
-  const snapshot = await firestore.collection("batches").doc(String(batchId)).get();
+  const snapshot = await getFirestore().collection("batches").doc(String(batchId)).get();
   return snapshot.exists ? mapBatch(snapshot.id, snapshot.data()!) : null;
 }
 
 async function listArticles(batchIds: number[]): Promise<ArticleRecord[]> {
   if (batchIds.length === 0) return [];
-  const snapshot = await firestore
+  const snapshot = await getFirestore()
     .collection("articleSummaries")
     .where("batch_id", "in", batchIds)
     .get();

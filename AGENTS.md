@@ -19,7 +19,7 @@ AI が収集・要約したニュース記事を閲覧するための Next.js �
 |---|---|
 | フレームワーク | Next.js 16.2.3（App Router） |
 | UI | MUI v9（Material Design）+ Emotion |
-| DB | Firestore（`@google-cloud/firestore` を直接利用。ORM は無し） |
+| DB | Firestore（`@google-cloud/firestore` 直接利用、Cloud Run 本番）または SQLite（Prisma 7 + `@prisma/adapter-better-sqlite3`、Docker Compose 自前ホスト用）。`DB_BACKEND` で切替 |
 | 言語 | TypeScript 5 / React 19 |
 | ビルド | `output: "standalone"`、Turbopack 有効 |
 | 環境管理 | mise（`.mise.toml`） |
@@ -51,7 +51,10 @@ src/
     BackButton.tsx      # 戻るボタン（未使用の可能性あり）
     BatchListItem.tsx   # バッチリストアイテム（未使用の可能性あり）
   lib/
-    db.ts               # Firestore クライアントと取得・整形ロジック
+    db.ts               # DB_BACKEND によるディスパッチャ（4関数を再エクスポート）
+    db.firestore.ts     # Firestore 実装（Cloud Run 本番）
+    db.sqlite.ts        # SQLite 実装（Prisma、Docker Compose 自前ホスト用）
+    db.shared.ts        # 両実装が共有するクラスタ折り畳み・カテゴリ整列ロジック
     categorySort.ts     # カテゴリ並び順の純粋関数（サーバ/クライアント共用）
     categorySortServer.ts # Cookie と env から並び順を解決（サーバ専用）
     types.ts            # 画面へ渡すデータ型
@@ -61,20 +64,34 @@ src/
 
 ## データストア
 
-Firestore を `@google-cloud/firestore` で直接読む（ORM は挟まない）。書き込みは
-サマライザ側だけが行い、Viewer は読み取り専用。
+`DB_BACKEND` 環境変数（`firestore`〈既定〉/ `sqlite`）でバックエンドを切り替える。
+`src/lib/db.ts` はどちらの実装を使うかを選ぶだけの薄いディスパッチャで、
+呼び出し元（`page.tsx` 等）はバックエンドを意識しない。
 
-| コレクション | 主なフィールド |
+- **Firestore**（`src/lib/db.firestore.ts`）: Cloud Run 本番。`@google-cloud/firestore`
+  を直接利用（ORM は挟まない）。書き込みはサマライザ側だけが行い、Viewer は読み取り専用
+- **SQLite**（`src/lib/db.sqlite.ts`）: Docker Compose で自前ホストする構成向け。
+  News-Summarizer の `database.backend: sqlite` が書き込む同じファイルを Prisma 7 +
+  `@prisma/adapter-better-sqlite3` 経由で読む。スキーマは `prisma/schema.prisma`
+  （News-Summarizer 側 `outputs/database.py` の CREATE TABLE と手動で同期する必要がある）
+
+両実装とも同じ4関数（`listBatchHeaders` / `listBatchesPage` / `getBatch` /
+`hydrateBatches`）を提供し、クラスタ折り畳み・カテゴリ整列ロジックは
+`src/lib/db.shared.ts` に一本化して共有する（バックエンドごとの実装差でロジックが
+ドリフトしないようにするため）。
+
+| データ | 主なフィールド |
 |---|---|
-| `batches` | `id` / `executed_at` / `total_articles` / `digest_text` |
-| `articleSummaries` | `id` / `batch_id` / `category` / `group_id` / `group_topic` / `summary_title` / `summary_text` / `keywords` / `original_url` / `original_title` / `feed_title` |
+| batch（Firestore: `batches` コレクション / SQLite: `batches` テーブル） | `id` / `executed_at` / `total_articles` / `digest_text` |
+| 記事（Firestore: `articleSummaries` コレクション / SQLite: `article_summaries` テーブル） | `id` / `batch_id` / `category` / `group_id` / `group_topic` / `summary_title` / `summary_text` / `keywords` / `original_url` / `original_title` / `feed_title` |
 
-- `keywords` は配列だが、移行前のデータは JSON 文字列。`mapArticle()` が両方を
-  受けて try/catch で空配列にフォールバックする
+- `keywords` は Firestore では配列（移行前データのみ JSON 文字列）、SQLite では常に
+  JSON 文字列。両実装の `mapArticle`/`toArticleRecord` が try/catch で空配列に
+  フォールバックする
 - `feed_title` は後から追加。持たない記事は URL のホスト名にフォールバックする
 - `group_id` / `group_topic` の使い方は「類似記事の統合表示」を参照
-- `batches` は `executed_at` で `orderBy` するが、`articleSummaries` には
-  `orderBy` を付けず取得後にクライアント側で整列する
+- Firestore の `batches` は `executed_at` で `orderBy` するが、`articleSummaries` には
+  `orderBy` を付けず取得後にクライアント側で整列する（SQLite 側も同じ方針で揃えている）
 
 ## 環境変数
 
@@ -82,24 +99,35 @@ Firestore を `@google-cloud/firestore` で直接読む（ORM は挟まない）
 
 | 変数 | 説明 |
 |---|---|
-| `GOOGLE_CLOUD_PROJECT` | Firestore のあるプロジェクト |
-| `FIRESTORE_DATABASE` | データベース ID（既定 `(default)`） |
+| `DB_BACKEND` | `firestore`（既定）/ `sqlite`。未設定または `firestore` 以外の値は Firestore 実装を使う |
+| `GOOGLE_CLOUD_PROJECT` | Firestore のあるプロジェクト（`DB_BACKEND=firestore` のとき） |
+| `FIRESTORE_DATABASE` | データベース ID（既定 `(default)`、`DB_BACKEND=firestore` のとき） |
 | `FIRESTORE_EMULATOR_HOST` | エミュレータ利用時のみ |
+| `DATABASE_URL` | SQLite ファイルパス（`file:/path/to/news_summarizer.db` 形式、`DB_BACKEND=sqlite` のとき必須） |
 | `CATEGORY_ORDER` | カテゴリの既定表示順（カンマ区切り）。「カテゴリの表示順」を参照 |
 
 ## 重要な設計上の注意
 
 ### Server Component / Client Component の境界
 
-- **データフェッチは Server Component で行う**。`batches/[id]/page.tsx` が Firestore を読み、props としてデータを子コンポーネントへ渡す。
+- **データフェッチは Server Component で行う**。`batches/[id]/page.tsx` が `@/lib/db`（バックエンドのディスパッチャ）を読み、props としてデータを子コンポーネントへ渡す。
 - **MUI コンポーネントに関数を props として渡す場合は `"use client"` が必要**。`<Box component={Link}>` のように MUI Client Component に Next.js の `Link` 関数を渡すと "Functions cannot be passed directly to Client Components" エラーになる。該当コンポーネントに `"use client"` を付与して解決する。
 
-### Firestore クライアント
+### DB クライアントの初期化
 
-- `src/lib/db.ts` でシングルトンを管理。開発時は `globalThis` に載せて HMR での再生成を防ぐ。
+- `db.ts` は `db.firestore.ts` と `db.sqlite.ts` を**両方静的 import** して
+  `DB_BACKEND` で選ぶだけなので、どちらの環境でも両方のモジュールが評価される。
+  そのためモジュール読み込み時に Firestore/Prisma クライアントを即座に生成すると、
+  使わない側のバックエンドでも初期化コスト・エラーが発生してしまう
+  （例: `DB_BACKEND=sqlite` なのに `DATABASE_URL` 未設定で `db.firestore.ts` が
+  Firestore へ接続しようとする、逆に Firestore 環境で `DATABASE_URL` 未設定の
+  `db.sqlite.ts` が例外を投げる、等）。両実装とも「初回呼び出し時まで生成を遅らせる」
+  遅延初期化（`getFirestore()` / `getPrisma()`）にしてあるので、新しいバックエンドの
+  実装を足すときもこのパターンを踏襲すること
+- どちらも開発時は `globalThis` にシングルトンを載せて HMR での再生成を防ぐ
 - Route Handler と Server Component で `@google-cloud/firestore` が別バンドルとして
   重複ロードされ、`Timestamp` の `instanceof` が false になることがある。日付判定は
-  `asDate()` のように `toDate` の有無で行う（dual package hazard 対策）。
+  `asDate()`（`db.firestore.ts`）のように `toDate` の有無で行う（dual package hazard 対策）
 
 ### カテゴリの表示順
 
@@ -131,9 +159,11 @@ Cloud Run サービスへ `CATEGORY_ORDER`（カンマ区切り）として注�
 `group_id` / `group_topic` を各記事に振って保存する。**記事レコード自体は統合されない**ので、
 Viewer が畳まないと同じニュースが記事の数だけカードとして並ぶ。
 
-- `hydrateBatches()`（`src/lib/db.ts`）が `(batchId, category, groupId)` 単位で
-  `ArticleRecord[]` にまとめ、`collapseCluster()` が1件の `Article` に畳む。
-  `sources` に全メンバーの出典が入る（代表が先頭、単独記事なら要素1）
+- 各バックエンドの `hydrateBatches()` が記事を取得し、共有の
+  `buildBatchesWithArticles()`（`src/lib/db.shared.ts`）へ渡す。ここで
+  `(batchId, category, groupId)` 単位で `ArticleRecord[]` にまとめ、
+  `collapseCluster()` が1件の `Article` に畳む。`sources` に全メンバーの
+  出典が入る（代表が先頭、単独記事なら要素1）
 - **`groupId === null` は畳まない**。グルーピング失敗時のフォールバック値であり、
   null どうしは無関係な記事。キーに記事 id を混ぜて必ず単独クラスタにする
 - 代表は要約本文が最も長いもの、同点は id 昇順。実行ごとに表示が入れ替わらないよう決定的にする
