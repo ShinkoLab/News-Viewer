@@ -16,6 +16,10 @@ COPY package.json package-lock.json ./
 # （消すと npm ci が「schema.prisma が無い」で失敗する）ので、無駄を承知で
 # そのままにしてある。実際にビルドで使われる生成物は builder ステージの
 # 明示的な `npx prisma generate`（下）が作る方。
+# 補足: PRISMA_SKIP_POSTINSTALL_GENERATE は Prisma 自身が内部で登録する
+# postinstall フック用のスイッチであり、package.json に自前で書いた
+# "postinstall": "prisma generate" スクリプトそのものはスキップしない
+# （実機で確認済み。設定しても schema.prisma が無いと同じエラーで npm ci が失敗する）。
 COPY prisma ./prisma
 COPY prisma.config.ts ./
 RUN npm ci
@@ -54,9 +58,10 @@ RUN groupadd --system --gid 1001 nodejs && \
 # Copy only the production output
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
-# standalone 出力には Prisma のクライアント生成物は含まれないため別途コピーする
-# （DB_BACKEND=sqlite のときのみ実際に読み込まれる）
-COPY --from=builder --chown=nextjs:nodejs /app/src/generated ./src/generated
+# Prisma 7 + Turbopack は生成クライアント（WASM クエリコンパイラ含む）を
+# .next/standalone にバンドル済みのチャンクへ直接インライン化するため、
+# src/generated を別途コピーする必要はない（実機で standalone 単体起動して
+# DB_BACKEND=sqlite のクエリが通ることを確認済み）。
 
 # Copy license and notice files for compliance
 COPY --from=builder --chown=nextjs:nodejs /app/LICENSE ./LICENSE

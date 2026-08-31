@@ -54,16 +54,17 @@ function getPrisma(): PrismaClient {
 // 一時的な状況なので、空データとして扱う（それ以外の DB エラーはそのまま投げる）。
 //
 // PrismaClientKnownRequestError は SQLite のエラーコードを .code に持つ
-// （実機で確認済み: 例外の .code === "SQLITE_CANTOPEN"）。.code が無い/一致しない
-// 場合の保険として、既知のメッセージ文言もあわせてチェックする。
+// （実機で確認済み: 例外の .code === "SQLITE_CANTOPEN"）ため、それを優先して見る。
+// .code が無いケース（マウント先ディレクトリごと存在しない場合に better-sqlite3
+// が投げる TypeError は .code を持たない）のためだけに、メッセージ文言も保険として
+// チェックする。SQLITE_CANTOPEN/SQLITE_BUSY 自体は .code 側で判定できるので
+// ここには含めない（二重チェックを避ける）。
 const RECOVERABLE_SQLITE_CODES = new Set(["SQLITE_CANTOPEN", "SQLITE_BUSY"]);
 const RECOVERABLE_MESSAGE_SUBSTRINGS = [
   "unable to open database file",
-  "SQLITE_CANTOPEN",
-  "SQLITE_BUSY",
   "database is locked",
   // マウント先ディレクトリごと存在しない場合（named volume 未マウント等）は
-  // better-sqlite3 が別の文言の TypeError を投げる。
+  // better-sqlite3 が別の文言の TypeError を投げる（.code を持たない）。
   "Cannot open database because the directory does not exist",
 ];
 
