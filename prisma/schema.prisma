@@ -52,16 +52,7 @@ model batches {
   article_summaries article_summaries[]
 }
 
-model email_attempts {
-  uidl            String   @id
-  attempts        Int      @default(0)
-  last_attempt_at DateTime @default(now())
-}
-
-/// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
-model processed_emails {
-  uidl         String?  @id
-  processed_at DateTime @default(now())
-
-  @@ignore
-}
+// News-Summarizer 側の SQLite には他に processed_emails / email_attempts
+// テーブルもあるが（POP3 メールの重複排除用）、Viewer はどちらも一切読まない
+// ため、この Prisma スキーマには意図的にモデルを定義していない
+// （メンテナンス対象を実際に使う batches / article_summaries だけに絞るため）。

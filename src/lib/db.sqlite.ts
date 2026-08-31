@@ -47,25 +47,38 @@ function getPrisma(): PrismaClient {
 
 // readonly: true で開くと SQLITE_OPEN_CREATE が付かないため、News-Summarizer が
 // まだ一度もパイプラインを実行しておらず DB ファイル自体が存在しない状態（例えば
-// Docker Compose を初回起動した直後）だと "unable to open database file" で
-// 例外になる。Firestore 版が「バッチ0件」を普通に返せるのと同じ土俵に揃えるため、
-// このケースだけは空データとして扱う（それ以外の DB エラーはそのまま投げる）。
-function isMissingDatabaseFileError(error: unknown): boolean {
+// Docker Compose を初回起動した直後）だと SQLITE_CANTOPEN で例外になる。また
+// News-Summarizer 側は WAL/busy_timeout を設定していないため、書き込み中に
+// 読みに行くと（アダプタの timeout 経過後）SQLITE_BUSY になることもある。
+// どちらも Firestore 版が「バッチ0件」を普通に返せるのと同じ状態に見えるはずの
+// 一時的な状況なので、空データとして扱う（それ以外の DB エラーはそのまま投げる）。
+//
+// PrismaClientKnownRequestError は SQLite のエラーコードを .code に持つ
+// （実機で確認済み: 例外の .code === "SQLITE_CANTOPEN"）。.code が無い/一致しない
+// 場合の保険として、既知のメッセージ文言もあわせてチェックする。
+const RECOVERABLE_SQLITE_CODES = new Set(["SQLITE_CANTOPEN", "SQLITE_BUSY"]);
+const RECOVERABLE_MESSAGE_SUBSTRINGS = [
+  "unable to open database file",
+  "SQLITE_CANTOPEN",
+  "SQLITE_BUSY",
+  "database is locked",
+  // マウント先ディレクトリごと存在しない場合（named volume 未マウント等）は
+  // better-sqlite3 が別の文言の TypeError を投げる。
+  "Cannot open database because the directory does not exist",
+];
+
+function isRecoverableSqliteError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
-  return (
-    error.message.includes("unable to open database file") ||
-    error.message.includes("SQLITE_CANTOPEN") ||
-    // マウント先ディレクトリごと存在しない場合（named volume 未マウント等）は
-    // better-sqlite3 が別の文言の TypeError を投げる。
-    error.message.includes("Cannot open database because the directory does not exist")
-  );
+  const code = (error as { code?: unknown }).code;
+  if (typeof code === "string" && RECOVERABLE_SQLITE_CODES.has(code)) return true;
+  return RECOVERABLE_MESSAGE_SUBSTRINGS.some((substring) => error.message.includes(substring));
 }
 
 async function withMissingDbFallback<T>(run: () => Promise<T>, fallback: T): Promise<T> {
   try {
     return await run();
   } catch (error) {
-    if (isMissingDatabaseFileError(error)) return fallback;
+    if (isRecoverableSqliteError(error)) return fallback;
     throw error;
   }
 }
