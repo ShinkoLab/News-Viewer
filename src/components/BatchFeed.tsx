@@ -23,6 +23,7 @@ export default function BatchFeed({ initialBatches, initialHasMore, initialNextB
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [nextBefore, setNextBefore] = useState(initialNextBefore);
+  const filtering = filters.category !== null || filters.period !== "all";
 
   const loadMore = useCallback(async () => {
     if (loading || !hasMore) return;
@@ -58,7 +59,7 @@ export default function BatchFeed({ initialBatches, initialHasMore, initialNextB
         <BatchExpansionPanel
           key={batch.id}
           batch={batch}
-          defaultExpanded={index === 0}
+          defaultExpanded={filtering || index === 0}
         />
       ))}
 
