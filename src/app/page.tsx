@@ -7,7 +7,7 @@ import SidebarLayout from "@/components/SidebarLayout";
 import BatchSidebar from "@/components/BatchSidebar";
 import BatchFeed from "@/components/BatchFeed";
 import CategorySortProvider from "@/components/CategorySortProvider";
-import ArticleFilterBar from "@/components/ArticleFilterBar";
+import ArticleFilterMenu from "@/components/ArticleFilterMenu";
 
 export const dynamic = "force-dynamic";
 
@@ -43,9 +43,11 @@ export default async function HomePage({ searchParams }: Props) {
   }
 
   return (
-    <SidebarLayout sidebar={<BatchSidebar batches={allBatches} currentId={-1} />}>
+    <SidebarLayout
+      sidebar={<BatchSidebar batches={allBatches} currentId={-1} />}
+      appBarActions={<ArticleFilterMenu filters={filters} categories={categories} />}
+    >
       <CategorySortProvider mode={sort.mode} order={sort.order}>
-        <ArticleFilterBar filters={filters} categories={categories} />
         <BatchFeed
           key={`${filters.category ?? "all"}:${filters.period}`}
           initialBatches={page.batches}

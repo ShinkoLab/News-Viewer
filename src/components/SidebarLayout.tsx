@@ -14,9 +14,10 @@ type Props = {
   sidebar: React.ReactNode;
   children: React.ReactNode;
   showHomeButton?: boolean;
+  appBarActions?: React.ReactNode;
 };
 
-export default function SidebarLayout({ sidebar, children, showHomeButton }: Props) {
+export default function SidebarLayout({ sidebar, children, showHomeButton, appBarActions }: Props) {
   const [open, setOpen] = useState(false);
   const mainRef = useRef<HTMLElement>(null);
 
@@ -71,6 +72,7 @@ export default function SidebarLayout({ sidebar, children, showHomeButton }: Pro
             <HomeIcon />
           </IconButton>
         )}
+        {appBarActions && <Box sx={{ ml: "auto" }}>{appBarActions}</Box>}
       </Box>
 
       {/* ボディ */}
