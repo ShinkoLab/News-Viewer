@@ -8,36 +8,44 @@ import Typography from "@mui/material/Typography";
 import BatchExpansionPanel from "./BatchExpansionPanel";
 import { CategorySortSelect } from "./CategorySortProvider";
 import type { BatchWithArticles, BatchesApiResponse } from "@/lib/types";
+import type { ArticleFilters } from "@/lib/articleFilters";
 
 type Props = {
   initialBatches: BatchWithArticles[];
   initialHasMore: boolean;
+  initialNextBefore: string | null;
+  filters: ArticleFilters;
 };
 
-export default function BatchFeed({ initialBatches, initialHasMore }: Props) {
+export default function BatchFeed({ initialBatches, initialHasMore, initialNextBefore, filters }: Props) {
   const [batches, setBatches] = useState<BatchWithArticles[]>(initialBatches);
   const [hasMore, setHasMore] = useState(initialHasMore);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [nextBefore, setNextBefore] = useState(initialNextBefore);
 
   const loadMore = useCallback(async () => {
     if (loading || !hasMore) return;
     setLoading(true);
     setError(null);
     try {
-      const before = batches.at(-1)?.executedAt;
-      const res = await fetch(`/api/batches?before=${encodeURIComponent(before ?? "")}`);
+      const params = new URLSearchParams();
+      if (nextBefore) params.set("before", nextBefore);
+      if (filters.category) params.set("category", filters.category);
+      if (filters.period !== "all") params.set("period", filters.period);
+      const res = await fetch(`/api/batches?${params}`);
       if (!res.ok) throw new Error(`fetch failed: ${res.status}`);
       const data: BatchesApiResponse = await res.json();
       setBatches((prev) => [...prev, ...data.batches]);
       setHasMore(data.hasMore);
+      setNextBefore(data.nextBefore);
     } catch (e) {
       console.error(e);
       setError("追加のバッチを読み込めませんでした。");
     } finally {
       setLoading(false);
     }
-  }, [loading, hasMore, batches]);
+  }, [loading, hasMore, nextBefore, filters]);
 
   return (
     <Box>
@@ -53,6 +61,19 @@ export default function BatchFeed({ initialBatches, initialHasMore }: Props) {
           defaultExpanded={index === 0}
         />
       ))}
+
+      {batches.length === 0 && (
+        <Box sx={{ py: 8, textAlign: "center" }}>
+          <Typography variant="h6" component="p" sx={{ mb: 0.5 }}>
+            {hasMore ? "直近の範囲に一致する記事がありません" : "条件に一致する記事がありません"}
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            {hasMore
+              ? "さらに古い記事を検索するには「もっと読み込む」を押してください。"
+              : "カテゴリまたは期間を変更してください。"}
+          </Typography>
+        </Box>
+      )}
 
       <Box sx={{ display: "flex", flexDirection: "column", alignItems: "center", py: 3, gap: 1 }}>
         {error && (
