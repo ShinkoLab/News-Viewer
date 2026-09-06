@@ -37,6 +37,7 @@ export default function ArticleFilterMenu({ filters, categories }: Props) {
   const pathname = usePathname();
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
   const [pending, startTransition] = useTransition();
+  const [draft, setDraft] = useState(filters);
 
   const update = (next: ArticleFilters) => {
     const params = new URLSearchParams();
@@ -46,9 +47,25 @@ export default function ArticleFilterMenu({ filters, categories }: Props) {
     startTransition(() => router.replace(query ? `${pathname}?${query}` : pathname));
   };
 
-  const handleOpen = (event: MouseEvent<HTMLButtonElement>) => setAnchorEl(event.currentTarget);
+  const handleOpen = (event: MouseEvent<HTMLButtonElement>) => {
+    setDraft(filters);
+    setAnchorEl(event.currentTarget);
+  };
   const handleClose = () => setAnchorEl(null);
+  const handleApply = () => {
+    update({
+      category: draft.category?.trim() || null,
+      period: draft.period,
+    });
+    handleClose();
+  };
+  const handleReset = () => {
+    const reset: ArticleFilters = { category: null, period: "all" };
+    setDraft(reset);
+    update(reset);
+  };
   const activeCount = Number(filters.category !== null) + Number(filters.period !== "all");
+  const changed = draft.category !== filters.category || draft.period !== filters.period;
   const open = anchorEl !== null;
 
   return (
@@ -95,13 +112,17 @@ export default function ArticleFilterMenu({ filters, categories }: Props) {
           <Autocomplete
             freeSolo
             options={categories}
-            value={filters.category}
+            value={draft.category}
+            inputValue={draft.category ?? ""}
             disabled={pending}
+            onInputChange={(_event, value) =>
+              setDraft((current) => ({ ...current, category: value || null }))
+            }
             onChange={(_event, value) =>
-              update({
-                ...filters,
+              setDraft((current) => ({
+                ...current,
                 category: typeof value === "string" && value.trim() ? value.trim() : null,
-              })
+              }))
             }
             renderInput={(params) => (
               <TextField {...params} label="カテゴリ（入力可）" size="small" />
@@ -112,11 +133,14 @@ export default function ArticleFilterMenu({ filters, categories }: Props) {
             <InputLabel id="period-filter-label">期間</InputLabel>
             <Select
               labelId="period-filter-label"
-              value={filters.period}
+              value={draft.period}
               label="期間"
               disabled={pending}
               onChange={(event) =>
-                update({ ...filters, period: event.target.value as ArticlePeriod })
+                setDraft((current) => ({
+                  ...current,
+                  period: event.target.value as ArticlePeriod,
+                }))
               }
             >
               {PERIOD_OPTIONS.map((option) => (
@@ -127,18 +151,27 @@ export default function ArticleFilterMenu({ filters, categories }: Props) {
             </Select>
           </FormControl>
 
-          <Box sx={{ display: "flex", minHeight: 32, alignItems: "center" }}>
+          <Box sx={{ display: "flex", minHeight: 32, alignItems: "center", gap: 1 }}>
             {activeCount > 0 && (
               <Button
                 size="small"
                 startIcon={<RestartAltIcon />}
                 disabled={pending}
-                onClick={() => update({ category: null, period: "all" })}
+                onClick={handleReset}
                 sx={{ textTransform: "none" }}
               >
                 条件を解除
               </Button>
             )}
+            <Button
+              variant="contained"
+              size="small"
+              disabled={pending || !changed}
+              onClick={handleApply}
+              sx={{ ml: "auto", textTransform: "none" }}
+            >
+              適用
+            </Button>
             {pending && <CircularProgress size={20} aria-label="絞り込み中" sx={{ ml: "auto" }} />}
           </Box>
         </Box>
@@ -146,4 +179,3 @@ export default function ArticleFilterMenu({ filters, categories }: Props) {
     </>
   );
 }
-
