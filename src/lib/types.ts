@@ -38,4 +38,5 @@ export type BatchWithArticles = {
 export type BatchesApiResponse = {
   batches: BatchWithArticles[];
   hasMore: boolean;
+  nextBefore: string | null;
 };

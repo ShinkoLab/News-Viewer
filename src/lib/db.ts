@@ -9,6 +9,7 @@ import {
   sortCategories,
   type CategorySort,
 } from "@/lib/categorySort";
+import type { ArticleFilters } from "@/lib/articleFilters";
 
 export type BatchRecord = {
   id: number;
@@ -105,12 +106,98 @@ export async function listBatchHeaders(limit = 30) {
   });
 }
 
-export async function listBatchesPage(limit: number, before?: Date) {
+export async function listBatchesPage(limit: number, before?: Date, since?: Date) {
   let query: Query = firestore.collection("batches").orderBy("executed_at", "desc");
   if (before) query = query.where("executed_at", "<", before);
+  if (since) query = query.where("executed_at", ">=", since);
   const snapshot = await query.limit(limit + 1).get();
   const records = snapshot.docs.map((doc) => mapBatch(doc.id, doc.data()));
   return { records: records.slice(0, limit), hasMore: records.length > limit };
+}
+
+const MAX_FILTER_SCAN_BATCHES = 30;
+
+/**
+ * フィルタUIに表示するカテゴリ候補。
+ *
+ * 本番は categories.yaml 由来の CATEGORY_ORDER をそのまま使う。未設定の
+ * ローカル環境では、フィルタ結果とは独立した直近履歴から候補を復元する。
+ */
+export async function listCategoryOptions(sort: CategorySort): Promise<string[]> {
+  if (sort.order.length > 0) return sort.order;
+
+  const page = await listBatchesPage(30);
+  const batches = await hydrateBatches(page.records, sort);
+  return Array.from(
+    new Set(batches.flatMap((batch) => batch.categories.map((entry) => entry.category)))
+  ).sort((a, b) => a.localeCompare(b, "ja"));
+}
+
+export async function listFilteredBatchesPage(
+  limit: number,
+  sort: CategorySort,
+  filters: ArticleFilters,
+  before?: Date,
+  since?: Date
+) {
+  let cursor = before;
+  const matches: BatchWithArticles[] = [];
+  let hasMore = false;
+  let scanned = 0;
+
+  while (matches.length < limit && scanned < MAX_FILTER_SCAN_BATCHES) {
+    const scanLimit = Math.min(limit, MAX_FILTER_SCAN_BATCHES - scanned);
+    const page = await listBatchesPage(scanLimit, cursor, since);
+    if (page.records.length === 0) {
+      hasMore = false;
+      break;
+    }
+    scanned += page.records.length;
+
+    const hydrated = await hydrateBatches(page.records, sort);
+    for (const batch of hydrated) {
+      const categories = filters.category
+        ? batch.categories.filter((entry) => entry.category === filters.category)
+        : batch.categories;
+      if (categories.length === 0) continue;
+
+      matches.push({
+        ...batch,
+        categories,
+        totalArticles: filters.category
+          ? categories.reduce(
+              (total, entry) =>
+                total + entry.articles.reduce((count, article) => count + article.sources.length, 0),
+              0
+            )
+          : batch.totalArticles,
+        // 全カテゴリの文章なので、カテゴリ指定時には誤解を避けるため表示しない。
+        digestText: filters.category ? null : batch.digestText,
+      });
+      cursor = new Date(batch.executedAt);
+      if (matches.length === limit) {
+        hasMore = page.hasMore || batch.id !== hydrated.at(-1)?.id;
+        break;
+      }
+    }
+
+    if (matches.length === limit) break;
+    cursor = page.records.at(-1)?.executedAt;
+    if (!page.hasMore) {
+      hasMore = false;
+      break;
+    }
+
+    // カテゴリ索引がない現行スキーマで、希少または不正なカテゴリによる
+    // 1リクエストの全履歴走査を防ぐ。続きは nextBefore から明示的に取得する。
+    if (scanned >= MAX_FILTER_SCAN_BATCHES) hasMore = true;
+  }
+
+  return {
+    batches: matches,
+    hasMore,
+    nextBefore: cursor?.toISOString() ?? null,
+  };
 }
 
 export async function getBatch(batchId: number): Promise<BatchRecord | null> {
