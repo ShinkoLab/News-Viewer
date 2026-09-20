@@ -59,7 +59,10 @@ const BODY_SUBSTRING_BOOST = 0.05;
 
 const DISTANCE_FIELD = "vector_distance";
 
-/** クラスタ補完で読むフィールド。embedding を外すのが主目的（1件の大半を占める）。 */
+/**
+ * 表示に必要なフィールド。embedding を外すのが主目的で、1件の大半をベクトルが占める。
+ * findNearest の応答とクラスタ補完の両方で使う。
+ */
 const CLUSTER_FIELDS = [
   "id",
   "batch_id",
@@ -279,6 +282,13 @@ async function vectorLeg(
       // カテゴリは等価なので事前フィルタにできる（複合ベクトルインデックスが必要）。
       // 期間は不等式なので findNearest の事前フィルタにできず、呼び出し側で事後処理する。
       if (filters.category) base = base.where("category", "==", filters.category);
+
+      // 表示に要るフィールドだけを取る。応答が運ぶ embedding は1件12KiBあり、
+      // 200件で2.4MiBになるが、検索結果の描画には一切使わない。
+      // 本番データでの実測: 射影なし54.5秒 → 射影あり3.0秒（18倍）。
+      // **距離フィールドも射影に含めること。** 含めないとサーバが載せた距離ごと
+      // 落ちてスコアが全部0になる（実測で確認済み）。
+      base = base.select(...CLUSTER_FIELDS, DISTANCE_FIELD);
 
       const snapshot = await base
         .findNearest({
