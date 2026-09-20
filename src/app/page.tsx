@@ -8,6 +8,7 @@ import BatchSidebar from "@/components/BatchSidebar";
 import BatchFeed from "@/components/BatchFeed";
 import CategorySortProvider from "@/components/CategorySortProvider";
 import ArticleFilterMenu from "@/components/ArticleFilterMenu";
+import SearchLaunchButton from "@/components/SearchLaunchButton";
 
 export const dynamic = "force-dynamic";
 
@@ -34,7 +35,10 @@ export default async function HomePage({ searchParams }: Props) {
 
   if (allBatches.length === 0) {
     return (
-      <SidebarLayout sidebar={<BatchSidebar batches={[]} currentId={-1} />}>
+      <SidebarLayout
+        sidebar={<BatchSidebar batches={[]} currentId={-1} />}
+        appBarActions={<SearchLaunchButton />}
+      >
         <Box sx={{ p: 4 }}>
           <Typography color="text.secondary">データがありません。</Typography>
         </Box>
@@ -45,7 +49,12 @@ export default async function HomePage({ searchParams }: Props) {
   return (
     <SidebarLayout
       sidebar={<BatchSidebar batches={allBatches} currentId={-1} />}
-      appBarActions={<ArticleFilterMenu filters={filters} categories={categories} />}
+      appBarActions={
+        <Box sx={{ display: "flex", alignItems: "center" }}>
+          <SearchLaunchButton />
+          <ArticleFilterMenu filters={filters} categories={categories} />
+        </Box>
+      }
     >
       <CategorySortProvider mode={sort.mode} order={sort.order}>
         <BatchFeed

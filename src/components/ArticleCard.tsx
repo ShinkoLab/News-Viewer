@@ -13,7 +13,10 @@ import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import LayersIcon from "@mui/icons-material/Layers";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import Link from "@mui/material/Link";
+// MUI の Link を既に使っているので next/link は別名で受ける。
+import NextLink from "next/link";
 import ShareMenuButton from "./ShareMenuButton";
+import { formatJapaneseDateShort } from "@/lib/format";
 import type { ArticleSource } from "@/lib/types";
 
 type Props = {
@@ -25,6 +28,14 @@ type Props = {
   groupTopic: string | null;
   /** 同じニュースを報じた記事の出典。代表が先頭。単独記事なら要素1。 */
   sources: ArticleSource[];
+  /** 検索結果でのみ渡る。0〜1の一致度。 */
+  score?: number;
+  /** 検索結果でのみ渡る。元のバッチへ戻る導線に使う。 */
+  batchId?: number;
+  /** 検索結果でのみ渡る。ISO 8601。 */
+  batchExecutedAt?: string;
+  /** 検索結果でのみ渡る。keywords の完全一致でヒットしたか。 */
+  matchedKeyword?: boolean;
 };
 
 /** ソース一覧の表示名。feed_title を持たない移行前の記事は URL のホスト名で代用する。 */
@@ -48,11 +59,16 @@ export default function ArticleCard({
   originalTitle,
   groupTopic,
   sources,
+  score,
+  batchId,
+  batchExecutedAt,
+  matchedKeyword,
 }: Props) {
   const cardRef = useRef<HTMLDivElement>(null);
   const [sourcesOpen, setSourcesOpen] = useState(false);
   const merged = sources.length > 1;
   const sourcesId = `article-sources-${sources[0]?.id ?? summaryTitle}`;
+  const hasSearchMeta = score !== undefined || batchExecutedAt !== undefined;
 
   return (
     <Card
@@ -73,6 +89,59 @@ export default function ArticleCard({
             pb: "16px !important",
           }}
         >
+          {/* 検索結果のときだけ出る。一致度とバッチへの導線。 */}
+          {hasSearchMeta && (
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
+              {score !== undefined && (
+                // 一致度は検索語に紐づく値で、画像として持ち出すと意味が失われる。
+                <Box data-share-controls="true" sx={{ display: "flex" }}>
+                  <Chip
+                    label={`一致度 ${Math.round(score * 100)}%`}
+                    size="small"
+                    sx={{
+                      borderRadius: "2px",
+                      bgcolor: "primary.main",
+                      color: "primary.contrastText",
+                      fontWeight: 600,
+                    }}
+                  />
+                </Box>
+              )}
+              {matchedKeyword && (
+                <Box data-share-controls="true" sx={{ display: "flex" }}>
+                  <Chip
+                    label="タグ一致"
+                    size="small"
+                    variant="outlined"
+                    sx={{
+                      borderRadius: "2px",
+                      color: "secondary.main",
+                      borderColor: "secondary.main",
+                      fontWeight: 600,
+                    }}
+                  />
+                </Box>
+              )}
+              {batchExecutedAt && (
+                // 日付は出典情報なので共有画像にも残す。
+                <Typography variant="caption" sx={{ color: "text.secondary" }}>
+                  {batchId === undefined ? (
+                    formatJapaneseDateShort(batchExecutedAt)
+                  ) : (
+                    <Link
+                      component={NextLink}
+                      href={`/batches/${batchId}`}
+                      underline="hover"
+                      sx={{ color: "inherit" }}
+                    >
+                      {formatJapaneseDateShort(batchExecutedAt)}
+                    </Link>
+                  )}
+                </Typography>
+              )}
+            </Box>
+          )}
+
           {/* 複数記事を束ねたカードであることを最初に示す */}
           {merged && groupTopic && (
             <Typography
@@ -93,7 +162,9 @@ export default function ArticleCard({
             {summaryText}
           </Typography>
 
-          {/* キーワードChip — 最大5件表示して情報過多を防ぐ */}
+          {/* キーワードChip — 最大5件表示して情報過多を防ぐ。
+              検索は keywords 全件が対象なので、6件目以降は引けるがクリックはできない
+              （サマライザのプロンプトは3〜5個生成するので今は上限に当たらない）。 */}
           {keywords.length > 0 && (
             // role="group" + aria-label でスクリーンリーダーにコンテキストを提供
             <Box
@@ -107,10 +178,14 @@ export default function ArticleCard({
                   label={kw}
                   size="small"
                   variant="outlined"
+                  clickable
+                  component={NextLink}
+                  href={`/search?q=${encodeURIComponent(kw)}`}
                   sx={{
                     color: "primary.main",
                     borderColor: "primary.light",
                     bgcolor: "transparent",
+                    textDecoration: "none",
                   }}
                 />
               ))}

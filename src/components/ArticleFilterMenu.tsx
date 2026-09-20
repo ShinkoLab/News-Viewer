@@ -30,9 +30,14 @@ const PERIOD_OPTIONS: { value: ArticlePeriod; label: string }[] = [
 type Props = {
   filters: ArticleFilters;
   categories: string[];
+  /**
+   * 検索ページで絞り込むときに維持する検索語。
+   * update() は URLSearchParams を毎回組み直すので、渡さないと q が消える。
+   */
+  query?: string;
 };
 
-export default function ArticleFilterMenu({ filters, categories }: Props) {
+export default function ArticleFilterMenu({ filters, categories, query }: Props) {
   const router = useRouter();
   const pathname = usePathname();
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
@@ -41,10 +46,11 @@ export default function ArticleFilterMenu({ filters, categories }: Props) {
 
   const update = (next: ArticleFilters) => {
     const params = new URLSearchParams();
+    if (query) params.set("q", query);
     if (next.category) params.set("category", next.category);
     if (next.period !== "all") params.set("period", next.period);
-    const query = params.toString();
-    startTransition(() => router.replace(query ? `${pathname}?${query}` : pathname));
+    const search = params.toString();
+    startTransition(() => router.replace(search ? `${pathname}?${search}` : pathname));
   };
 
   const handleOpen = (event: MouseEvent<HTMLButtonElement>) => {

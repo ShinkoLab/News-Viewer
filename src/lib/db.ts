@@ -18,7 +18,7 @@ export type BatchRecord = {
   digestText: string | null;
 };
 
-type ArticleRecord = Omit<Article, "sources"> & {
+export type ArticleRecord = Omit<Article, "sources"> & {
   batchId: number;
   category: string;
   groupId: number | null;
@@ -64,7 +64,7 @@ function mapBatch(id: string, data: DocumentData): BatchRecord {
   };
 }
 
-function mapArticle(id: string, data: DocumentData): ArticleRecord {
+export function mapArticle(id: string, data: DocumentData): ArticleRecord {
   let keywords: string[] = [];
   if (Array.isArray(data.keywords)) {
     keywords = data.keywords.filter((value: unknown): value is string => typeof value === "string");
@@ -240,7 +240,7 @@ function toSource(article: ArticleRecord): ArticleSource {
  * 代表は要約本文が最も長いもの（＝最も情報量のあるカードを表に出す）。
  * 同点は id 昇順にして、実行ごとに表示が入れ替わらないようにする。
  */
-function collapseCluster(members: ArticleRecord[]): Article {
+export function collapseCluster(members: ArticleRecord[]): Article {
   const representative = members.reduce((best, candidate) =>
     candidate.summaryText.length > best.summaryText.length ||
     (candidate.summaryText.length === best.summaryText.length && candidate.id < best.id)
@@ -263,6 +263,45 @@ function collapseCluster(members: ArticleRecord[]): Article {
   };
 }
 
+/**
+ * クラスタのキー。group_id はバッチ内で一意なので batchId と組にすれば足りる。
+ * groupId が null なのはグルーピングに失敗した記事で、null どうしは無関係。
+ * 記事 id を混ぜて必ず単独クラスタにする。
+ *
+ * 検索（src/lib/search.ts）もこれを使う。2か所に書くとフィードと検索で
+ * 「同じニュース」の定義がずれる。
+ */
+export function clusterKeyOf(article: ArticleRecord): string {
+  return article.groupId === null
+    ? `${article.batchId} ${article.category} solo ${article.id}`
+    : `${article.batchId} ${article.category} g${article.groupId}`;
+}
+
+/**
+ * バッチIDを指定してまとめて取得する。検索結果に表示日時を与えるための結合に使う。
+ *
+ * ドキュメントIDによる直接取得なので索引が要らず、`where("id", "in", ...)` の
+ * 30件制限にも掛からない。
+ */
+export async function getBatchesByIds(ids: number[]): Promise<Map<number, BatchRecord>> {
+  const result = new Map<number, BatchRecord>();
+  const unique = [...new Set(ids)];
+  if (unique.length === 0) return result;
+
+  const collection = firestore.collection("batches");
+  const CHUNK = 300;
+  for (let i = 0; i < unique.length; i += CHUNK) {
+    const refs = unique.slice(i, i + CHUNK).map((id) => collection.doc(String(id)));
+    const snapshots = await firestore.getAll(...refs);
+    for (const snapshot of snapshots) {
+      if (!snapshot.exists) continue;
+      const batch = mapBatch(snapshot.id, snapshot.data()!);
+      result.set(batch.id, batch);
+    }
+  }
+  return result;
+}
+
 export async function hydrateBatches(
   records: BatchRecord[],
   sort: CategorySort = { mode: DEFAULT_SORT_MODE, order: [] }
@@ -270,14 +309,6 @@ export async function hydrateBatches(
   const articles = await listArticles(records.map((record) => record.id));
   const byBatch = new Map<number, Map<string, ArticleRecord[][]>>();
   for (const record of records) byBatch.set(record.id, new Map());
-
-  // クラスタのキー。group_id はバッチ内で一意なので batchId と組にすれば足りる。
-  // groupId が null なのはグルーピングに失敗した記事で、null どうしは無関係。
-  // 記事 id を混ぜて必ず単独クラスタにする。
-  const clusterKey = (article: ArticleRecord) =>
-    article.groupId === null
-      ? `${article.batchId} ${article.category} solo ${article.id}`
-      : `${article.batchId} ${article.category} g${article.groupId}`;
 
   const clusterByKey = new Map<string, ArticleRecord[]>();
 
@@ -291,7 +322,7 @@ export async function hydrateBatches(
       categories.set(article.category, clusters);
     }
 
-    const key = clusterKey(article);
+    const key = clusterKeyOf(article);
     const existing = clusterByKey.get(key);
     if (existing) {
       existing.push(article);
