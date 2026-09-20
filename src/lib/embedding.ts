@@ -60,9 +60,26 @@ function readConfig(): EmbeddingConfig | null {
   };
 }
 
-/** 表記ゆれを吸収した比較用の正規形。全角英数や大文字小文字の差を潰す。 */
+/**
+ * 表記ゆれを吸収した**比較用**の正規形。全角英数や大文字小文字の差を潰す。
+ *
+ * メモリ上の部分一致・完全一致の判定だけに使う。embedding には渡さないこと
+ * （下の canonicalQuery を使う）。
+ */
 export function normalizeQuery(text: string): string {
   return text.trim().normalize("NFKC").toLowerCase();
+}
+
+/**
+ * embedding API へ送る形。全角英数だけ畳み、**大文字小文字は保つ**。
+ *
+ * 小文字化すると意味ベクトルが実測で壊れる。本番データ8451件に対して
+ * "AI" は距離0.564で200件ヒットするのに、"ai" は0.700で18件まで落ちる。
+ * "OpenAI" → "openai" では上位が OpenAI の記事から NVIDIA の記事に変わる。
+ * 頭字語は大文字小文字がそのまま語の同一性を担っているため。
+ */
+export function canonicalQuery(text: string): string {
+  return text.trim().normalize("NFKC");
 }
 
 async function requestEmbedding(query: string, config: EmbeddingConfig): Promise<number[]> {
@@ -109,17 +126,19 @@ async function requestEmbedding(query: string, config: EmbeddingConfig): Promise
  * 呼び出し側はキーワード一致だけの検索へ縮退する。検索ページが落ちてはいけない。
  */
 export async function embedQuery(query: string): Promise<number[] | null> {
-  const normalized = normalizeQuery(query);
-  if (!normalized) return null;
+  // キャッシュキーは実際に API へ送る文字列と一致させる。比較用の正規形を
+  // キーにすると "AI" と "ai" が同じベクトルを共有してしまう。
+  const canonical = canonicalQuery(query);
+  if (!canonical) return null;
 
   const config = readConfig();
   if (!config) return null;
 
-  const cached = cache.get(normalized);
+  const cached = cache.get(canonical);
   if (cached) {
     // LRU: 参照されたものを末尾へ移す。
-    cache.delete(normalized);
-    cache.set(normalized, cached);
+    cache.delete(canonical);
+    cache.set(canonical, cached);
     try {
       return await cached;
     } catch {
@@ -129,8 +148,8 @@ export async function embedQuery(query: string): Promise<number[] | null> {
 
   // 配列ではなく Promise を入れる。同じ語の同時リクエスト（キーワードChip連打）も
   // 1回の API 呼び出しにまとまる。
-  const pending = requestEmbedding(normalized, config);
-  cache.set(normalized, pending);
+  const pending = requestEmbedding(canonical, config);
+  cache.set(canonical, pending);
   if (cache.size > MAX_CACHE_ENTRIES) {
     const oldest = cache.keys().next();
     if (!oldest.done) cache.delete(oldest.value);
@@ -140,7 +159,7 @@ export async function embedQuery(query: string): Promise<number[] | null> {
     return await pending;
   } catch (e) {
     // 一時的な障害をキャッシュし続けない。
-    if (cache.get(normalized) === pending) cache.delete(normalized);
+    if (cache.get(canonical) === pending) cache.delete(canonical);
     console.error("[embedding] 検索語のベクトル化に失敗しました:", e);
     return null;
   }
