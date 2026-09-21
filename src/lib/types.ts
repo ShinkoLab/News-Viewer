@@ -40,3 +40,29 @@ export type BatchesApiResponse = {
   hasMore: boolean;
   nextBefore: string | null;
 };
+
+/** 検索結果1件。記事はフィードと同じクラスタ畳み込み済みの形。 */
+export type SearchResult = {
+  article: Article;
+  category: string;
+  batchId: number;
+  /** 表示と期間絞り込みに使うバッチの実行日時。ISO 8601（JSON境界を越えるため string）。 */
+  batchExecutedAt: string;
+  /** 0〜1。コサイン類似度にキーワード一致の加点を乗せてクランプした値。 */
+  score: number;
+  /** keywords の完全一致でヒットしたか。バッジ表示に使う。 */
+  matchedKeyword: boolean;
+};
+
+export type SearchApiResponse = {
+  query: string;
+  results: SearchResult[];
+  /** ベクトル検索が使えず、キーワード一致だけで返したか。 */
+  degraded: boolean;
+  /**
+   * 結果が不完全な可能性があるか。原因は複数ある:
+   * 候補の上限に当たった / キーワード脚が索引未作成で順序を諦めた /
+   * バッチ情報を引けなかった。いずれもユーザーには「取りこぼしたかも」としか言えない。
+   */
+  truncated: boolean;
+};

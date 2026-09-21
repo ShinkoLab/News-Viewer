@@ -43,3 +43,17 @@ export function periodStart(period: ArticlePeriod, now = new Date()): Date | und
   if (!days) return undefined;
   return new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
 }
+
+/** 検索ページの状態。`q` が主題で、カテゴリ・期間はその絞り込み。 */
+export type SearchFilters = ArticleFilters & { q: string };
+
+export function parseSearchParams(params: {
+  q?: string | string[];
+  category?: string | string[];
+  period?: string | string[];
+}): SearchFilters {
+  return {
+    ...parseArticleFilters(params),
+    q: (firstValue(params.q) ?? "").trim(),
+  };
+}
