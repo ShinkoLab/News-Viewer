@@ -19,7 +19,7 @@ AI が収集・要約したニュース記事を閲覧するための Next.js �
 |---|---|
 | フレームワーク | Next.js 16.2.3（App Router） |
 | UI | MUI v9（Material Design）+ Emotion |
-| DB | Firestore（`@google-cloud/firestore` を直接利用。ORM は無し） |
+| DB | Firestore（`@google-cloud/firestore` 直接利用、Cloud Run 本番）または SQLite（Prisma 7 + `@prisma/adapter-better-sqlite3`、Docker Compose 自前ホスト用）。`DB_BACKEND` で切替 |
 | 言語 | TypeScript 5 / React 19 |
 | ビルド | `output: "standalone"`、Turbopack 有効 |
 | 環境管理 | mise（`.mise.toml`） |
@@ -56,9 +56,15 @@ src/
     BackButton.tsx      # 戻るボタン（未使用の可能性あり）
     BatchListItem.tsx   # バッチリストアイテム（未使用の可能性あり）
   lib/
-    db.ts               # Firestore クライアントと取得・整形ロジック
-    search.ts           # ハイブリッド検索（ベクトル kNN + キーワード一致）
-    embedding.ts        # 検索語のベクトル化とキャッシュ
+    db.ts               # DB_BACKEND によるディスパッチャ（取得関数と型を再エクスポート）
+    db.firestore.ts     # Firestore 実装（Cloud Run 本番）
+    db.sqlite.ts        # SQLite 実装（Prisma、Docker Compose 自前ホスト用）
+    db.shared.ts        # 両実装が共有するクラスタ折り畳み・カテゴリ整列・絞り込みロジック
+    search.ts           # 検索のディスパッチャ（Firestore = ハイブリッド、SQLite = キーワードのみ）
+    search.firestore.ts # ハイブリッド検索（ベクトル kNN + キーワード一致）
+    search.sqlite.ts    # SQLite 用のキーワード検索（embedding は呼ばない）
+    search.shared.ts    # 両実装が共有するスコア計算と結果の組み立て
+    embedding.ts        # 検索語のベクトル化とキャッシュ（Firestore 経路のみ）
     categorySort.ts     # カテゴリ並び順の純粋関数（サーバ/クライアント共用）
     categorySortServer.ts # Cookie と env から並び順を解決（サーバ専用）
     types.ts            # 画面へ渡すデータ型
@@ -68,20 +74,34 @@ src/
 
 ## データストア
 
-Firestore を `@google-cloud/firestore` で直接読む（ORM は挟まない）。書き込みは
-サマライザ側だけが行い、Viewer は読み取り専用。
+`DB_BACKEND` 環境変数（`firestore`〈既定〉/ `sqlite`）でバックエンドを切り替える。
+`src/lib/db.ts` はどちらの実装を使うかを選ぶだけの薄いディスパッチャで、
+呼び出し元（`page.tsx` 等）はバックエンドを意識しない。
 
-| コレクション | 主なフィールド |
+- **Firestore**（`src/lib/db.firestore.ts`）: Cloud Run 本番。`@google-cloud/firestore`
+  を直接利用（ORM は挟まない）。書き込みはサマライザ側だけが行い、Viewer は読み取り専用
+- **SQLite**（`src/lib/db.sqlite.ts`）: Docker Compose で自前ホストする構成向け。
+  News-Summarizer の `database.backend: sqlite` が書き込む同じファイルを Prisma 7 +
+  `@prisma/adapter-better-sqlite3` 経由で読む。スキーマは `prisma/schema.prisma`
+  （News-Summarizer 側 `outputs/database.py` の CREATE TABLE と手動で同期する必要がある）
+
+両実装とも同じ関数（`listBatchHeaders` / `listBatchesPage`〈`since` で期間下限も指定可〉/
+`getBatch` / `hydrateBatches` / `listCategoryOptions` / `listFilteredBatchesPage`）を提供し、クラスタ折り畳み・カテゴリ整列ロジックは
+`src/lib/db.shared.ts` に一本化して共有する（バックエンドごとの実装差でロジックが
+ドリフトしないようにするため）。
+
+| データ | 主なフィールド |
 |---|---|
-| `batches` | `id` / `executed_at` / `total_articles` / `digest_text` |
-| `articleSummaries` | `id` / `batch_id` / `category` / `group_id` / `group_topic` / `summary_title` / `summary_text` / `keywords` / `original_url` / `original_title` / `feed_title` |
+| batch（Firestore: `batches` コレクション / SQLite: `batches` テーブル） | `id` / `executed_at` / `total_articles` / `digest_text` |
+| 記事（Firestore: `articleSummaries` コレクション / SQLite: `article_summaries` テーブル） | `id` / `batch_id` / `category` / `group_id` / `group_topic` / `summary_title` / `summary_text` / `keywords` / `original_url` / `original_title` / `feed_title` |
 
-- `keywords` は配列だが、移行前のデータは JSON 文字列。`mapArticle()` が両方を
-  受けて try/catch で空配列にフォールバックする
+- `keywords` は Firestore では配列（移行前データのみ JSON 文字列）、SQLite では常に
+  JSON 文字列。両実装の `mapArticle`/`toArticleRecord` が try/catch で空配列に
+  フォールバックする
 - `feed_title` は後から追加。持たない記事は URL のホスト名にフォールバックする
 - `group_id` / `group_topic` の使い方は「類似記事の統合表示」を参照
-- `batches` は `executed_at` で `orderBy` するが、`articleSummaries` には
-  `orderBy` を付けず取得後にクライアント側で整列する
+- Firestore の `batches` は `executed_at` で `orderBy` するが、`articleSummaries` には
+  `orderBy` を付けず取得後にクライアント側で整列する（SQLite 側も同じ方針で揃えている）
 
 ## 環境変数
 
@@ -89,9 +109,11 @@ Firestore を `@google-cloud/firestore` で直接読む（ORM は挟まない）
 
 | 変数 | 説明 |
 |---|---|
-| `GOOGLE_CLOUD_PROJECT` | Firestore のあるプロジェクト |
-| `FIRESTORE_DATABASE` | データベース ID（既定 `(default)`） |
+| `DB_BACKEND` | `firestore`（既定）/ `sqlite`。未設定または `firestore` 以外の値は Firestore 実装を使う |
+| `GOOGLE_CLOUD_PROJECT` | Firestore のあるプロジェクト（`DB_BACKEND=firestore` のとき） |
+| `FIRESTORE_DATABASE` | データベース ID（既定 `(default)`、`DB_BACKEND=firestore` のとき） |
 | `FIRESTORE_EMULATOR_HOST` | エミュレータ利用時のみ |
+| `DATABASE_URL` | SQLite ファイルパス（`file:/path/to/news_summarizer.db` 形式、`DB_BACKEND=sqlite` のとき必須） |
 | `CATEGORY_ORDER` | カテゴリの既定表示順（カンマ区切り）。「カテゴリの表示順」を参照 |
 | `EMBEDDING_BASE_URL` | 検索語を embedding する OpenAI 互換エンドポイント |
 | `LLM_EMBEDDING_MODEL` | embedding モデル ID。**サマライザと一致必須** |
@@ -99,20 +121,31 @@ Firestore を `@google-cloud/firestore` で直接読む（ORM は挟まない）
 | `EMBEDDING_API_KEY` | 上記エンドポイントの API キー |
 
 `EMBEDDING_*` が未設定でも壊れない。意味検索だけが無効になり、キーワード一致に縮退する。
+**`DB_BACKEND=sqlite` では `EMBEDDING_*` を設定しても使わない**（意味検索は Firestore 構成だけの機能）。
 
 ## 重要な設計上の注意
 
 ### Server Component / Client Component の境界
 
-- **データフェッチは Server Component で行う**。`batches/[id]/page.tsx` が Firestore を読み、props としてデータを子コンポーネントへ渡す。
+- **データフェッチは Server Component で行う**。`batches/[id]/page.tsx` が `@/lib/db`（バックエンドのディスパッチャ）を読み、props としてデータを子コンポーネントへ渡す。
 - **MUI コンポーネントに関数を props として渡す場合は `"use client"` が必要**。`<Box component={Link}>` のように MUI Client Component に Next.js の `Link` 関数を渡すと "Functions cannot be passed directly to Client Components" エラーになる。該当コンポーネントに `"use client"` を付与して解決する。
 
-### Firestore クライアント
+### DB クライアントの初期化
 
-- `src/lib/db.ts` でシングルトンを管理。開発時は `globalThis` に載せて HMR での再生成を防ぐ。
+- `db.ts` は `DB_BACKEND` に応じて `db.firestore.ts` / `db.sqlite.ts` を**動的
+  import**（`import("@/lib/db.sqlite")` 等）し、選ばれなかった側のモジュールは
+  読み込まれない。これは選ばれなかった側の重い依存（Firestore SDK や
+  `@prisma/adapter-better-sqlite3` のようにモジュール本体が import 時点で
+  ネイティブアドオンを require するパッケージ）まで評価されるのを避けるため
+  （`db.ts` 内のコメント参照）。選ばれた側のモジュール自体も、実際に import
+  されるのは `db.ts` の関数が最初に呼ばれた時点であり、Firestore/Prisma クライアント
+  の生成自体もそこからさらに「初回クエリ時まで」遅らせる遅延初期化
+  （`getFirestore()` / `getPrisma()`）にしてある。新しいバックエンドの実装を
+  足すときもこのパターンを踏襲すること
+- どちらも開発時は `globalThis` にシングルトンを載せて HMR での再生成を防ぐ
 - Route Handler と Server Component で `@google-cloud/firestore` が別バンドルとして
   重複ロードされ、`Timestamp` の `instanceof` が false になることがある。日付判定は
-  `asDate()` のように `toDate` の有無で行う（dual package hazard 対策）。
+  `asDate()`（`db.firestore.ts`）のように `toDate` の有無で行う（dual package hazard 対策）
 
 ### カテゴリの表示順
 
@@ -144,9 +177,11 @@ Cloud Run サービスへ `CATEGORY_ORDER`（カンマ区切り）として注�
 `group_id` / `group_topic` を各記事に振って保存する。**記事レコード自体は統合されない**ので、
 Viewer が畳まないと同じニュースが記事の数だけカードとして並ぶ。
 
-- `hydrateBatches()`（`src/lib/db.ts`）が `(batchId, category, groupId)` 単位で
-  `ArticleRecord[]` にまとめ、`collapseCluster()` が1件の `Article` に畳む。
-  `sources` に全メンバーの出典が入る（代表が先頭、単独記事なら要素1）
+- 各バックエンドの `hydrateBatches()` が記事を取得し、共有の
+  `buildBatchesWithArticles()`（`src/lib/db.shared.ts`）へ渡す。ここで
+  `(batchId, category, groupId)` 単位で `ArticleRecord[]` にまとめ、
+  `collapseCluster()` が1件の `Article` に畳む。`sources` に全メンバーの
+  出典が入る（代表が先頭、単独記事なら要素1）
 - **`groupId === null` は畳まない**。グルーピング失敗時のフォールバック値であり、
   null どうしは無関係な記事。キーに記事 id を混ぜて必ず単独クラスタにする
 - 代表は要約本文が最も長いもの、同点は id 昇順。実行ごとに表示が入れ替わらないよう決定的にする
@@ -159,6 +194,15 @@ Viewer が畳まないと同じニュースが記事の数だけカードとし�
 これはサマライザ側の `unify_group_categories()` が揃えている前提で、Viewer では補正しない。
 
 ### セマンティック検索
+
+> **バックエンド別の挙動**: `src/lib/search.ts` が `DB_BACKEND` で振り分ける。
+> Firestore は以下のハイブリッド検索（`search.firestore.ts`）。**SQLite は意味検索なし・
+> キーワード一致のみ**（`search.sqlite.ts`）で、embedding エンドポイントは呼ばず、常に
+> `degraded: true` を返して UI の「キーワード一致のみ」の案内を出す。SQLite は LIKE による
+> タイトル・本文・keywords の部分一致で候補（最大200件、超えたら `truncated`）を集め、
+> スコアは Firestore と同じ `search.shared.ts` の `scoreCandidate`（ベクトル項は常に 0）で付ける。
+> カテゴリ・期間の `SearchFilters` と `SearchApiResponse` の形は共通。
+> 以降の記述は Firestore 構成の話。
 
 `keywords` は LLM が自由に生成するので表記ゆれが避けられず、完全一致だけでは検索にならない。
 サマライザが保存した記事ベクトル（`articleSummaries.embedding`）に対する kNN と、

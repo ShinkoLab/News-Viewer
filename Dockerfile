@@ -2,7 +2,26 @@
 FROM node:22-bookworm-slim AS deps
 WORKDIR /app
 
+# better-sqlite3 (DB_BACKEND=sqlite 用) のネイティブビルドに必要
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 make g++ \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY package.json package-lock.json ./
+# package.json の postinstall（prisma generate）がスキーマを必要とするため、
+# npm ci より前にコピーしておく（このステージではまだソース全体を COPY しない）。
+# ここで生成される src/generated/prisma はこのステージにしか存在せず
+# （下の builder ステージへは node_modules しか COPY しないため）使われないが、
+# 削っても npm ci の高速化にはならない一方、postinstall 自体は消せない
+# （消すと npm ci が「schema.prisma が無い」で失敗する）ので、無駄を承知で
+# そのままにしてある。実際にビルドで使われる生成物は builder ステージの
+# 明示的な `npx prisma generate`（下）が作る方。
+# 補足: PRISMA_SKIP_POSTINSTALL_GENERATE は Prisma 自身が内部で登録する
+# postinstall フック用のスイッチであり、package.json に自前で書いた
+# "postinstall": "prisma generate" スクリプトそのものはスキップしない
+# （実機で確認済み。設定しても schema.prisma が無いと同じエラーで npm ci が失敗する）。
+COPY prisma ./prisma
+COPY prisma.config.ts ./
 RUN npm ci
 
 # Stage 2: builder
@@ -14,6 +33,13 @@ ENV NEXT_TELEMETRY_DISABLED=1
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
+
+# prisma/schema.prisma の datasource ブロックは url を持たない（接続先は実行時に
+# db.sqlite.ts が DATABASE_URL からアダプタへ直接渡す）ため、generate 自体は
+# DATABASE_URL 無しで完結する。ここで生成される src/generated/prisma が
+# 実際に runner ステージへコピーされる版になる。
+RUN --mount=type=cache,target=/root/.cache/prisma \
+    npx prisma generate
 
 # BuildKit のキャッシュマウントを利用して Next.js のビルドキャッシュを永続化し、フルビルドを回避
 RUN --mount=type=cache,target=/app/.next/cache \
@@ -32,6 +58,10 @@ RUN groupadd --system --gid 1001 nodejs && \
 # Copy only the production output
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+# Prisma 7 + Turbopack は生成クライアント（WASM クエリコンパイラ含む）を
+# .next/standalone にバンドル済みのチャンクへ直接インライン化するため、
+# src/generated を別途コピーする必要はない（実機で standalone 単体起動して
+# DB_BACKEND=sqlite のクエリが通ることを確認済み）。
 
 # Copy license and notice files for compliance
 COPY --from=builder --chown=nextjs:nodejs /app/LICENSE ./LICENSE

@@ -41,5 +41,9 @@ next-env.d.ts
 
 /src/generated/prisma
 
+# ローカル SQLite (DB_BACKEND=sqlite での動作確認用)
+*.db
+*.db-journal
+
 # claude code
 .claude/

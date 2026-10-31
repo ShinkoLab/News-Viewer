@@ -1,136 +1,63 @@
-import {
-  Firestore,
-  type DocumentData,
-  type Query,
-} from "@google-cloud/firestore";
-import type { Article, ArticleSource, BatchWithArticles } from "@/lib/types";
-import {
-  DEFAULT_SORT_MODE,
-  sortCategories,
-  type CategorySort,
-} from "@/lib/categorySort";
+import type { CategorySort } from "@/lib/categorySort";
 import type { ArticleFilters } from "@/lib/articleFilters";
+import type { BatchRecord } from "@/lib/db.shared";
 
-export type BatchRecord = {
-  id: number;
-  executedAt: Date;
-  totalArticles: number;
-  digestText: string | null;
-};
+export type { ArticleRecord, BatchRecord } from "@/lib/db.shared";
 
-export type ArticleRecord = Omit<Article, "sources"> & {
-  batchId: number;
-  category: string;
-  groupId: number | null;
-  feedTitle: string | null;
-};
+/**
+ * データストアの選択。DB_BACKEND=sqlite で Docker Compose 自前ホスト構成の
+ * SQLite（Prisma 経由）を使う。それ以外（未設定含む）は既定の Firestore（Cloud Run）。
+ * News-Summarizer 側の `database.backend` 切り替え（outputs/database.py の
+ * `create_database()`）と同じ発想。
+ *
+ * 両実装を静的 import すると、選ばれなかった側の重い依存（Firestore SDK /
+ * better-sqlite3 のネイティブバイナリ）までモジュール読み込み時に評価されて
+ * しまう（クライアント生成自体は遅延化していても、`@prisma/adapter-better-sqlite3`
+ * のようにモジュール本体が import 時点で native addon を require するパッケージも
+ * あるため）。動的 import で実際に選ばれた側だけを読み込む。
+ */
+type DbModule = typeof import("@/lib/db.firestore") | typeof import("@/lib/db.sqlite");
 
-function createFirestore() {
-  return new Firestore({
-    projectId: process.env.GOOGLE_CLOUD_PROJECT || undefined,
-    databaseId: process.env.FIRESTORE_DATABASE || "(default)",
-    ignoreUndefinedProperties: true,
-  });
-}
+let modulePromise: Promise<DbModule> | undefined;
 
-const globalForFirestore = globalThis as unknown as {
-  firestore: Firestore | undefined;
-};
-
-export const firestore = globalForFirestore.firestore ?? createFirestore();
-
-if (process.env.NODE_ENV !== "production") {
-  globalForFirestore.firestore = firestore;
-}
-
-function asDate(value: unknown): Date {
-  // Route Handler と Server Component で @google-cloud/firestore が別バンドルとして
-  // 重複ロードされることがあり、Timestamp クラスの実体が異なると instanceof が
-  // falseになるため、toDate の有無で判定する（dual package hazard対策）。
-  if (value && typeof value === "object" && typeof (value as { toDate?: unknown }).toDate === "function") {
-    return (value as { toDate: () => Date }).toDate();
+function loadImpl(): Promise<DbModule> {
+  if (!modulePromise) {
+    modulePromise = (
+      process.env.DB_BACKEND === "sqlite" ? import("@/lib/db.sqlite") : import("@/lib/db.firestore")
+    ).catch((error: unknown) => {
+      // 失敗した Promise をキャッシュしたままにすると、起動直後の一過性の問題
+      // （native addon の require 失敗など）が解消した後もずっと同じエラーで
+      // 失敗し続けてしまう。次回呼び出しで読み込みをやり直せるようにする。
+      modulePromise = undefined;
+      throw error;
+    });
   }
-  if (value instanceof Date) return value;
-  if (typeof value === "string" || typeof value === "number") return new Date(value);
-  throw new Error("Firestore batch has an invalid executed_at value");
+  return modulePromise;
 }
 
-function mapBatch(id: string, data: DocumentData): BatchRecord {
-  return {
-    id: Number(data.id ?? id),
-    executedAt: asDate(data.executed_at),
-    totalArticles: Number(data.total_articles ?? 0),
-    digestText: typeof data.digest_text === "string" ? data.digest_text : null,
-  };
-}
-
-export function mapArticle(id: string, data: DocumentData): ArticleRecord {
-  let keywords: string[] = [];
-  if (Array.isArray(data.keywords)) {
-    keywords = data.keywords.filter((value: unknown): value is string => typeof value === "string");
-  } else if (typeof data.keywords === "string") {
-    try {
-      const parsed = JSON.parse(data.keywords);
-      if (Array.isArray(parsed)) keywords = parsed.filter((value): value is string => typeof value === "string");
-    } catch {
-      keywords = [];
-    }
-  }
-
-  return {
-    id: String(data.id ?? id),
-    batchId: Number(data.batch_id),
-    category: String(data.category ?? "未分類"),
-    groupId: typeof data.group_id === "number" ? data.group_id : null,
-    groupTopic: typeof data.group_topic === "string" ? data.group_topic : null,
-    summaryTitle: String(data.summary_title ?? ""),
-    summaryText: String(data.summary_text ?? ""),
-    keywords,
-    originalUrl: typeof data.original_url === "string" ? data.original_url : null,
-    originalTitle: String(data.original_title ?? ""),
-    // feed_title は後から追加したフィールド。それ以前の記事には存在しない
-    // （表示側で URL のホスト名にフォールバックする）。
-    feedTitle: typeof data.feed_title === "string" ? data.feed_title : null,
-  };
-}
-
-export async function listBatchHeaders(limit = 30) {
-  const snapshot = await firestore
-    .collection("batches")
-    .orderBy("executed_at", "desc")
-    .limit(limit)
-    .get();
-  return snapshot.docs.map((doc) => {
-    const batch = mapBatch(doc.id, doc.data());
-    return { id: batch.id, executed_at: batch.executedAt };
-  });
+export async function listBatchHeaders(limit?: number) {
+  const impl = await loadImpl();
+  return impl.listBatchHeaders(limit);
 }
 
 export async function listBatchesPage(limit: number, before?: Date, since?: Date) {
-  let query: Query = firestore.collection("batches").orderBy("executed_at", "desc");
-  if (before) query = query.where("executed_at", "<", before);
-  if (since) query = query.where("executed_at", ">=", since);
-  const snapshot = await query.limit(limit + 1).get();
-  const records = snapshot.docs.map((doc) => mapBatch(doc.id, doc.data()));
-  return { records: records.slice(0, limit), hasMore: records.length > limit };
+  const impl = await loadImpl();
+  return impl.listBatchesPage(limit, before, since);
 }
 
-const MAX_FILTER_SCAN_BATCHES = 30;
+export async function getBatch(batchId: number) {
+  const impl = await loadImpl();
+  return impl.getBatch(batchId);
+}
 
-/**
- * フィルタUIに表示するカテゴリ候補。
- *
- * 本番は categories.yaml 由来の CATEGORY_ORDER をそのまま使う。未設定の
- * ローカル環境では、フィルタ結果とは独立した直近履歴から候補を復元する。
- */
-export async function listCategoryOptions(sort: CategorySort): Promise<string[]> {
-  if (sort.order.length > 0) return sort.order;
+export async function hydrateBatches(records: BatchRecord[], sort?: CategorySort) {
+  const impl = await loadImpl();
+  return impl.hydrateBatches(records, sort);
+}
 
-  const page = await listBatchesPage(30);
-  const batches = await hydrateBatches(page.records, sort);
-  return Array.from(
-    new Set(batches.flatMap((batch) => batch.categories.map((entry) => entry.category)))
-  ).sort((a, b) => a.localeCompare(b, "ja"));
+export async function listCategoryOptions(sort: CategorySort) {
+  const impl = await loadImpl();
+  return impl.listCategoryOptions(sort);
 }
 
 export async function listFilteredBatchesPage(
@@ -140,210 +67,6 @@ export async function listFilteredBatchesPage(
   before?: Date,
   since?: Date
 ) {
-  let cursor = before;
-  const matches: BatchWithArticles[] = [];
-  let hasMore = false;
-  let scanned = 0;
-
-  while (matches.length < limit && scanned < MAX_FILTER_SCAN_BATCHES) {
-    const scanLimit = Math.min(limit, MAX_FILTER_SCAN_BATCHES - scanned);
-    const page = await listBatchesPage(scanLimit, cursor, since);
-    if (page.records.length === 0) {
-      hasMore = false;
-      break;
-    }
-    scanned += page.records.length;
-
-    const hydrated = await hydrateBatches(page.records, sort);
-    for (const batch of hydrated) {
-      const categories = filters.category
-        ? batch.categories.filter((entry) => entry.category === filters.category)
-        : batch.categories;
-      if (categories.length === 0) continue;
-
-      matches.push({
-        ...batch,
-        categories,
-        totalArticles: filters.category
-          ? categories.reduce(
-              (total, entry) =>
-                total + entry.articles.reduce((count, article) => count + article.sources.length, 0),
-              0
-            )
-          : batch.totalArticles,
-        // 全カテゴリの文章なので、カテゴリ指定時には誤解を避けるため表示しない。
-        digestText: filters.category ? null : batch.digestText,
-      });
-      cursor = new Date(batch.executedAt);
-      if (matches.length === limit) {
-        hasMore = page.hasMore || batch.id !== hydrated.at(-1)?.id;
-        break;
-      }
-    }
-
-    if (matches.length === limit) break;
-    cursor = page.records.at(-1)?.executedAt;
-    if (!page.hasMore) {
-      hasMore = false;
-      break;
-    }
-
-    // カテゴリ索引がない現行スキーマで、希少または不正なカテゴリによる
-    // 1リクエストの全履歴走査を防ぐ。続きは nextBefore から明示的に取得する。
-    if (scanned >= MAX_FILTER_SCAN_BATCHES) hasMore = true;
-  }
-
-  return {
-    batches: matches,
-    hasMore,
-    nextBefore: cursor?.toISOString() ?? null,
-  };
-}
-
-export async function getBatch(batchId: number): Promise<BatchRecord | null> {
-  const snapshot = await firestore.collection("batches").doc(String(batchId)).get();
-  return snapshot.exists ? mapBatch(snapshot.id, snapshot.data()!) : null;
-}
-
-async function listArticles(batchIds: number[]): Promise<ArticleRecord[]> {
-  if (batchIds.length === 0) return [];
-  const snapshot = await firestore
-    .collection("articleSummaries")
-    .where("batch_id", "in", batchIds)
-    .get();
-  // カテゴリの表示順はここでは決めない（hydrateBatches が sortCategories で確定する）。
-  // カテゴリのグルーピング自体は Map のキーが担うので、ここで必要なのは
-  // カテゴリ内のクラスタ順を実行ごとにぶれさせないことだけ。
-  return snapshot.docs
-    .map((doc) => mapArticle(doc.id, doc.data()))
-    .sort((a, b) =>
-      (a.groupId ?? Number.MAX_SAFE_INTEGER) - (b.groupId ?? Number.MAX_SAFE_INTEGER) ||
-      a.id.localeCompare(b.id)
-    );
-}
-
-function toSource(article: ArticleRecord): ArticleSource {
-  return {
-    id: article.id,
-    originalTitle: article.originalTitle,
-    originalUrl: article.originalUrl,
-    feedTitle: article.feedTitle,
-  };
-}
-
-/**
- * 同一クラスタの記事を1件の Article に畳む。
- *
- * サマライザは取得ソースの違う同じニュースを embedding でクラスタリングして
- * group_id を振っているが、ここで畳まないと同じ記事が人数分のカードとして並ぶ。
- *
- * 代表は要約本文が最も長いもの（＝最も情報量のあるカードを表に出す）。
- * 同点は id 昇順にして、実行ごとに表示が入れ替わらないようにする。
- */
-export function collapseCluster(members: ArticleRecord[]): Article {
-  const representative = members.reduce((best, candidate) =>
-    candidate.summaryText.length > best.summaryText.length ||
-    (candidate.summaryText.length === best.summaryText.length && candidate.id < best.id)
-      ? candidate
-      : best
-  );
-
-  return {
-    id: representative.id,
-    summaryTitle: representative.summaryTitle,
-    summaryText: representative.summaryText,
-    keywords: representative.keywords,
-    originalUrl: representative.originalUrl,
-    originalTitle: representative.originalTitle,
-    groupTopic: representative.groupTopic,
-    sources: [
-      toSource(representative),
-      ...members.filter((member) => member.id !== representative.id).map(toSource),
-    ],
-  };
-}
-
-/**
- * クラスタのキー。group_id はバッチ内で一意なので batchId と組にすれば足りる。
- * groupId が null なのはグルーピングに失敗した記事で、null どうしは無関係。
- * 記事 id を混ぜて必ず単独クラスタにする。
- *
- * 検索（src/lib/search.ts）もこれを使う。2か所に書くとフィードと検索で
- * 「同じニュース」の定義がずれる。
- */
-export function clusterKeyOf(article: ArticleRecord): string {
-  return article.groupId === null
-    ? `${article.batchId} ${article.category} solo ${article.id}`
-    : `${article.batchId} ${article.category} g${article.groupId}`;
-}
-
-/**
- * バッチIDを指定してまとめて取得する。検索結果に表示日時を与えるための結合に使う。
- *
- * ドキュメントIDによる直接取得なので索引が要らず、`where("id", "in", ...)` の
- * 30件制限にも掛からない。
- */
-export async function getBatchesByIds(ids: number[]): Promise<Map<number, BatchRecord>> {
-  const result = new Map<number, BatchRecord>();
-  const unique = [...new Set(ids)];
-  if (unique.length === 0) return result;
-
-  const collection = firestore.collection("batches");
-  const CHUNK = 300;
-  for (let i = 0; i < unique.length; i += CHUNK) {
-    const refs = unique.slice(i, i + CHUNK).map((id) => collection.doc(String(id)));
-    const snapshots = await firestore.getAll(...refs);
-    for (const snapshot of snapshots) {
-      if (!snapshot.exists) continue;
-      const batch = mapBatch(snapshot.id, snapshot.data()!);
-      result.set(batch.id, batch);
-    }
-  }
-  return result;
-}
-
-export async function hydrateBatches(
-  records: BatchRecord[],
-  sort: CategorySort = { mode: DEFAULT_SORT_MODE, order: [] }
-): Promise<BatchWithArticles[]> {
-  const articles = await listArticles(records.map((record) => record.id));
-  const byBatch = new Map<number, Map<string, ArticleRecord[][]>>();
-  for (const record of records) byBatch.set(record.id, new Map());
-
-  const clusterByKey = new Map<string, ArticleRecord[]>();
-
-  for (const article of articles) {
-    const categories = byBatch.get(article.batchId);
-    if (!categories) continue;
-
-    let clusters = categories.get(article.category);
-    if (!clusters) {
-      clusters = [];
-      categories.set(article.category, clusters);
-    }
-
-    const key = clusterKeyOf(article);
-    const existing = clusterByKey.get(key);
-    if (existing) {
-      existing.push(article);
-    } else {
-      const members = [article];
-      clusterByKey.set(key, members);
-      clusters.push(members);
-    }
-  }
-
-  return records.map((record) => ({
-    id: record.id,
-    executedAt: record.executedAt.toISOString(),
-    totalArticles: record.totalArticles,
-    digestText: record.digestText,
-    categories: sortCategories(
-      [...(byBatch.get(record.id) ?? new Map<string, ArticleRecord[][]>())].map(([category, clusters]) => ({
-        category,
-        articles: clusters.map(collapseCluster),
-      })),
-      sort
-    ),
-  }));
+  const impl = await loadImpl();
+  return impl.listFilteredBatchesPage(limit, sort, filters, before, since);
 }

@@ -1,0 +1,58 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// 注意: DateTime 列（executed_at / created_at / published_at / last_attempt_at）は
+// News-Summarizer（Python の sqlite3）が CURRENT_TIMESTAMP で
+// "YYYY-MM-DD HH:MM:SS"（スペース区切り、UTC）として書き込む。一方、Prisma の
+// better-sqlite3 アダプタは typed API（findMany の where 等）へ渡す JS Date を
+// "YYYY-MM-DDTHH:MM:SS.sssZ"（T区切り）に直列化してバインドする。SQLite は
+// DateTime 列を TEXT として辞書式比較するため、この typed API 経由の比較
+// （lt/gt/lte/gte）は書式の違いで壊れる（例: db.sqlite.ts の listBatchesPage が
+// この理由で datetime() 正規化した生SQLに切り替えている）。この列を比較条件に
+// 使う新しいクエリを書くときは同じ罠を踏まないよう datetime() 正規化を必ず行うこと。
+
+model article_summaries {
+  id             Int       @id @default(autoincrement())
+  batch_id       Int
+  source_type    String
+  source_id      String
+  original_title String
+  original_url   String?
+  summary_title  String
+  summary_text   String
+  keywords       String
+  category       String
+  group_id       Int?
+  group_topic    String?
+  published_at   DateTime?
+  created_at     DateTime  @default(now())
+  embedding      String?
+  url_key        String?
+  feed_title     String?
+  batches        batches   @relation(fields: [batch_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([created_at], map: "idx_summaries_created")
+  @@index([category], map: "idx_summaries_category")
+  @@index([batch_id], map: "idx_summaries_batch")
+  @@index([url_key], map: "idx_summaries_url_key")
+  @@index([source_type, source_id], map: "idx_summaries_source")
+}
+
+model batches {
+  id                Int                 @id @default(autoincrement())
+  executed_at       DateTime            @default(now())
+  total_articles    Int
+  digest_text       String?
+  article_summaries article_summaries[]
+}
+
+// News-Summarizer 側の SQLite には他に processed_emails / email_attempts
+// テーブルもあるが（POP3 メールの重複排除用）、Viewer はどちらも一切読まない
+// ため、この Prisma スキーマには意図的にモデルを定義していない
+// （メンテナンス対象を実際に使う batches / article_summaries だけに絞るため）。
