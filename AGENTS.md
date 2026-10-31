@@ -262,6 +262,13 @@ npm run build    # プロダクションビルド
 npx tsc --noEmit # 型チェック
 ```
 
+## イメージの公開（GHCR）
+
+安定版タグ（`vX.Y.Z`）の push で GitHub Actions（`.github/workflows/publish-image.yml`）が
+`ghcr.io/shinkolab/news-viewer` へ multi-arch イメージを公開する。公開は gitleaks（全履歴）・
+Trivy のシークレットスキャン・禁止ファイル検査を全て通過した場合だけ。PR では同じ検証のみ行い push しない。
+Cloud Build / Artifact Registry の流れ（`cloudbuild.yaml`）とは別の配布経路で、そちらは変更しない。
+
 ## コーディング規約
 
 - コンポーネントの props 型は `type Props = {...}` で定義（interface は使わない）
