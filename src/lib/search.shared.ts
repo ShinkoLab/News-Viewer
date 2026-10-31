@@ -1,4 +1,4 @@
-import type { ArticleRecord } from "@/lib/db.shared";
+import { compareIds, type ArticleRecord } from "@/lib/db.shared";
 import { normalizeQuery } from "@/lib/embedding";
 import type { SearchResult } from "@/lib/types";
 
@@ -52,6 +52,6 @@ export function sortSearchResults(results: SearchResult[]): void {
     (a, b) =>
       b.score - a.score ||
       b.batchExecutedAt.localeCompare(a.batchExecutedAt) ||
-      a.article.id.localeCompare(b.article.id)
+      compareIds(a.article.id, b.article.id)
   );
 }

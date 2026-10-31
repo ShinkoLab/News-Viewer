@@ -47,10 +47,12 @@ export function parseKeywords(raw: unknown): string[] {
  * であり、単純な文字列比較では "10" < "9" になってしまい昇順の意図が崩れる。
  * 両方とも数値として解釈できる場合は数値で比較し、そうでなければ文字列比較に倒す。
  */
-function compareIds(a: string, b: string): number {
-  const numA = Number(a);
-  const numB = Number(b);
-  if (Number.isFinite(numA) && Number.isFinite(numB)) return numA - numB;
+export function compareIds(a: string, b: string): number {
+  // 全桁が数字のときだけ数値として比べる（"1e5" や "0x10" のような文字列は対象外）。
+  // Number に通すと精度を失うので、桁数 → 辞書順で比較する（先頭の 0 は想定しない）。
+  if (/^\d+$/.test(a) && /^\d+$/.test(b)) {
+    return a.length - b.length || (a < b ? -1 : a > b ? 1 : 0);
+  }
   return a.localeCompare(b);
 }
 

@@ -40,8 +40,8 @@ function emptyResponse(query: string, truncated = false): SearchApiResponse {
 }
 
 /** LIKE のワイルドカード（% _）とエスケープ文字そのものを、文字どおりの一致にする。 */
-function likePattern(term: string): string {
-  return `%${term.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
+function escapeLike(term: string): string {
+  return term.replace(/[\\%_]/g, (ch) => `\\${ch}`);
 }
 
 /**
@@ -52,12 +52,15 @@ function likePattern(term: string): string {
  * datetime() で正規化して比較する（prisma/schema.prisma の注意書き参照）。
  */
 async function findCandidateIds(terms: string[], filters: SearchFilters, since: Date | undefined) {
-  const patterns = terms.map(likePattern);
+  // keywords は JSON 配列の文字列（["AI", "OpenAI"]）で保存されている。素の部分一致を掛けると
+  // `"` や `,` のような記号だけの検索語が全行に一致して候補を埋めてしまうので、
+  // スコアで加点される「要素の完全一致」だけを `"語"` の形で引く。
   const textMatch = Prisma.join(
-    patterns.map(
-      (pattern) =>
-        Prisma.sql`(summary_title LIKE ${pattern} ESCAPE '\\' OR summary_text LIKE ${pattern} ESCAPE '\\' OR keywords LIKE ${pattern} ESCAPE '\\')`
-    ),
+    terms.map((term) => {
+      const pattern = `%${escapeLike(term)}%`;
+      const keywordPattern = `%${escapeLike(JSON.stringify(term))}%`;
+      return Prisma.sql`(summary_title LIKE ${pattern} ESCAPE '\\' OR summary_text LIKE ${pattern} ESCAPE '\\' OR keywords LIKE ${keywordPattern} ESCAPE '\\')`;
+    }),
     " OR "
   );
   const period = since
