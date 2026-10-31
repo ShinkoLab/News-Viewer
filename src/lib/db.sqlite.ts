@@ -6,7 +6,6 @@ import type { ArticleFilters } from "@/lib/articleFilters";
 import {
   buildBatchesWithArticles,
   compareArticleRecords,
-  listCategoryOptionsFrom,
   listFilteredBatchesPageFrom,
   parseKeywords,
   FALLBACK_CATEGORY,
@@ -244,8 +243,20 @@ export async function hydrateBatches(
 
 const source = { listBatchesPage, hydrateBatches };
 
-export function listCategoryOptions(sort: CategorySort): Promise<string[]> {
-  return listCategoryOptionsFrom(source, sort);
+export async function listCategoryOptions(sort: CategorySort): Promise<string[]> {
+  if (sort.order.length > 0) return sort.order;
+
+  // CATEGORY_ORDER 未設定（Docker Compose の既定）では毎ページ呼ばれる。共有実装のように
+  // 直近30バッチを丸ごと hydrate せず、カテゴリ名だけを SQL で取る。
+  return withMissingDbFallback(async () => {
+    const page = await listBatchesPageInternal(30);
+    if (page.records.length === 0) return [];
+    const rows = await getPrisma().article_summaries.groupBy({
+      by: ["category"],
+      where: { batch_id: { in: page.records.map((record) => record.id) } },
+    });
+    return rows.map((row) => row.category).sort((a, b) => a.localeCompare(b, "ja"));
+  }, [] as string[]);
 }
 
 export function listFilteredBatchesPage(
@@ -264,10 +275,9 @@ export async function getBatchesByIds(ids: number[]): Promise<Map<number, BatchR
   const unique = [...new Set(ids)];
   if (unique.length === 0) return result;
 
-  const rows = await withMissingDbFallback(
-    () => getPrisma().batches.findMany({ where: { id: { in: unique } } }),
-    [] as BatchRow[]
-  );
+  // ここでは DB 未作成 / ロックの縮退をしない。一部の結果だけ落ちると「一致なし」と
+  // 見分けがつかないので、例外は呼び出し元（検索全体の縮退）に任せる。
+  const rows = await getPrisma().batches.findMany({ where: { id: { in: unique } } });
   for (const row of rows) result.set(row.id, toBatchRecord(row));
   return result;
 }

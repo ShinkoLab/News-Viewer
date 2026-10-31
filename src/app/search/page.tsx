@@ -69,7 +69,9 @@ export default async function SearchPage({ searchParams }: Props) {
             記事を検索
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            調べたいことばを入力してください。表記が違っても意味の近い記事を探します。
+            {process.env.DB_BACKEND === "sqlite"
+              ? "調べたいことばを入力してください。タイトル・本文・タグに含まれる記事を探します。"
+              : "調べたいことばを入力してください。表記が違っても意味の近い記事を探します。"}
           </Typography>
         </Box>
       )}

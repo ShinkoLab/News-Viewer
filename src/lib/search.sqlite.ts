@@ -1,4 +1,4 @@
-import type { Prisma } from "@/generated/prisma/client";
+import { Prisma } from "@/generated/prisma/client";
 import { periodStart, type SearchFilters } from "@/lib/articleFilters";
 import {
   ARTICLE_SELECT,
@@ -26,8 +26,11 @@ import type { SearchApiResponse, SearchResult } from "@/lib/types";
  * 常に `degraded: true` を返し、UI の「キーワード一致のみ」の案内を出す。
  */
 
-/** 候補の取得上限。超えたら truncated を立てて UI に不完全の可能性を伝える。 */
-const CANDIDATE_LIMIT = 200;
+/**
+ * 候補の取得上限。スコア付けはこの件数を取ってからなので、上限内なら古い記事でも
+ * 関連度順に並ぶ。超えたら新しい順に切り捨てて truncated を立て、UI に不完全の可能性を伝える。
+ */
+const CANDIDATE_LIMIT = 1000;
 
 /** 1クエリに載せるバッチ数（OR 条件の肥大を避ける）。 */
 const COMPLETE_CHUNK = 50;
@@ -36,11 +39,37 @@ function emptyResponse(query: string, truncated = false): SearchApiResponse {
   return { query, results: [], degraded: true, truncated };
 }
 
-/** 期間内のバッチ ID。executed_at は datetime() で正規化して比較する（prisma/schema.prisma の注意書き参照）。 */
-async function batchIdsSince(since: Date): Promise<number[]> {
+/** LIKE のワイルドカード（% _）とエスケープ文字そのものを、文字どおりの一致にする。 */
+function likePattern(term: string): string {
+  return `%${term.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
+}
+
+/**
+ * 検索語を含む記事の id を新しい順に返す。
+ *
+ * Prisma の `contains` は `%` `_` をエスケープしないため（"50%" や "snake_case" が
+ * ほぼ全件に一致してしまう）、ESCAPE 付きの生 SQL で引く。期間は executed_at を
+ * datetime() で正規化して比較する（prisma/schema.prisma の注意書き参照）。
+ */
+async function findCandidateIds(terms: string[], filters: SearchFilters, since: Date | undefined) {
+  const patterns = terms.map(likePattern);
+  const textMatch = Prisma.join(
+    patterns.map(
+      (pattern) =>
+        Prisma.sql`(summary_title LIKE ${pattern} ESCAPE '\\' OR summary_text LIKE ${pattern} ESCAPE '\\' OR keywords LIKE ${pattern} ESCAPE '\\')`
+    ),
+    " OR "
+  );
+  const period = since
+    ? Prisma.sql`AND batch_id IN (SELECT id FROM batches WHERE datetime(executed_at) >= datetime(${since.toISOString()}))`
+    : Prisma.empty;
+  const category = filters.category ? Prisma.sql`AND category = ${filters.category}` : Prisma.empty;
+
   const rows = await getPrisma().$queryRaw<{ id: number }[]>`
-    SELECT id FROM batches
-    WHERE datetime(executed_at) >= datetime(${since.toISOString()})
+    SELECT id FROM article_summaries
+    WHERE (${textMatch}) ${period} ${category}
+    ORDER BY batch_id DESC, id ASC
+    LIMIT ${CANDIDATE_LIMIT + 1}
   `;
   return rows.map((row) => row.id);
 }
@@ -90,38 +119,23 @@ async function search(filters: SearchFilters, now: Date): Promise<SearchApiRespo
   if (!normalized) return emptyResponse(rawQuery);
 
   const since = periodStart(filters.period, now);
-  const where: Prisma.article_summariesWhereInput[] = [];
 
-  if (since) {
-    const ids = await batchIdsSince(since);
-    if (ids.length === 0) return emptyResponse(rawQuery);
-    where.push({ batch_id: { in: ids } });
-  }
-  if (filters.category) where.push({ category: filters.category });
-
-  // 生の語と正規形（NFKC + 小文字）の両方で当てる。LIKE は ASCII の大文字小文字を区別しない。
+  // 生の語と正規形（NFKC + 小文字）の両方で当てる。LIKE は ASCII の大文字小文字しか区別しないので、
+  // 全角英数など NFKC でしか一致しない表記は SQL 側では拾えない（Firestore 側の
+  // キーワード脚も完全一致のみで、同程度の制約）。
   const terms = [...new Set([rawQuery, normalized])];
-  where.push({
-    OR: terms.flatMap((term) => [
-      { summary_title: { contains: term } },
-      { summary_text: { contains: term } },
-      { keywords: { contains: term } },
-    ]),
-  });
+  const ids = await findCandidateIds(terms, filters, since);
+  const truncated = ids.length > CANDIDATE_LIMIT;
+  if (ids.length === 0) return emptyResponse(rawQuery);
 
   const rows = await getPrisma().article_summaries.findMany({
-    where: { AND: where },
+    where: { id: { in: ids.slice(0, CANDIDATE_LIMIT) } },
     select: ARTICLE_SELECT,
-    // 新しい順。上限に当たったら古い一致を取りこぼす。
-    orderBy: [{ batch_id: "desc" }, { id: "asc" }],
-    take: CANDIDATE_LIMIT + 1,
   });
-  const truncated = rows.length > CANDIDATE_LIMIT;
 
   // SQL は部分一致で広く拾うので、完全一致 / タイトル / 本文のいずれにも当たらないもの
   // （keywords の部分文字列にだけ当たったなど）は落とす。
   const scored = rows
-    .slice(0, CANDIDATE_LIMIT)
     .map((row) => scoreCandidate({ record: toArticleRecord(row), distance: null }, normalized))
     .filter((entry) => entry.score > 0);
   if (scored.length === 0) return emptyResponse(rawQuery, truncated);
