@@ -1,6 +1,6 @@
 {
   "name": "news-viewer",
-  "version": "1.5.2",
+  "version": "1.5.3",
   "license": "ISC",
   "private": true,
   "scripts": {
