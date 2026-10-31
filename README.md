@@ -47,6 +47,14 @@ docker compose up --build
 
 Viewerは http://localhost:3080 で起動し、同じCompose内のFirestoreエミュレーターへ接続します。
 
+### SQLiteバックエンド
+
+`DB_BACKEND=sqlite`と`DATABASE_URL=file:<News-Summarizerが書くSQLiteファイル>`を設定すると、
+Firestoreの代わりにSQLiteを読み取り専用で読みます（Docker Composeでの自前ホスト向け）。
+カテゴリ・期間の絞り込みは両バックエンドで同じように使えます。ただし**検索はキーワード一致のみ**で、
+意味検索（ベクトル検索）はFirestoreバックエンドでのみ利用できます。SQLiteでは`EMBEDDING_*`を
+設定しても使われず、検索画面に「キーワード一致のみ」と表示されます。
+
 ## Google Cloudへのデプロイ
 
 Cloud Run向けのコンテナは`Dockerfile`、Cloud Build設定は`cloudbuild.yaml`にあります。
@@ -56,6 +64,17 @@ Firestore、Cloud Run、IAPを含む環境全体は、News-Summarizerリポジ�
 
 Cloud RunではApplication Default Credentialsが自動的に使われるため、
 サービスアカウント鍵ファイルをコンテナへ入れる必要はありません。
+
+## Roadmap
+
+以下の機能を今後実装する予定です。
+
+- ✅ カテゴリと期間の組み合わせによる記事の絞り込み（例: テクノロジーの過去3日間）
+- よく使う閲覧条件の保存と再利用
+- 気になる記事を保存する「あとで読む」
+- ✅ キーワード検索（保存済みベクトルによる意味検索とキーワード一致のハイブリッド。ただし意味検索は Firestore 構成のみで、`DB_BACKEND=sqlite` ではキーワード一致のみ）
+- 特定キーワードを非表示にする除外設定
+- ✅ 保存済みベクトルを利用し、複数の配信元による同じ話題の記事を自動でまとめて表示する機能
 
 ## 免責事項
 

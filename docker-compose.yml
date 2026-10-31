@@ -21,6 +21,13 @@ services:
       # 定義元は News-Summarizer/categories.yaml。本番は infra/main.tf が
       # 同ファイルから生成して注入するので、ここだけ編集しても本番には効かない。
       CATEGORY_ORDER: "AI・機械学習,テクノロジー,経済・ビジネス,政治・社会,事件・事故・災害,科学・環境,健康・ライフ,カルチャー"
+      # 意味検索を試す場合のみ設定する（鍵はコミットしないこと）。
+      # サマライザ側の embedding_model / embedding_base_url と一致させること。
+      # 未設定ならキーワード一致のみに縮退する。
+      # EMBEDDING_BASE_URL: "https://openrouter.ai/api/v1"
+      # LLM_EMBEDDING_MODEL: "openai/text-embedding-3-small"
+      # EMBEDDING_DIMENSION: "1536"
+      # EMBEDDING_API_KEY: ""
     depends_on:
       - firestore
     restart: unless-stopped

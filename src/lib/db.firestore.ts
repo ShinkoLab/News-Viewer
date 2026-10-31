@@ -5,9 +5,12 @@ import {
 } from "@google-cloud/firestore";
 import type { BatchWithArticles } from "@/lib/types";
 import { DEFAULT_SORT_MODE, type CategorySort } from "@/lib/categorySort";
+import type { ArticleFilters } from "@/lib/articleFilters";
 import {
   buildBatchesWithArticles,
   compareArticleRecords,
+  listCategoryOptionsFrom,
+  listFilteredBatchesPageFrom,
   parseKeywords,
   FALLBACK_CATEGORY,
   type ArticleRecord,
@@ -31,7 +34,7 @@ const globalForFirestore = globalThis as unknown as {
 // DB_BACKEND に応じてこのモジュールを動的 import するだけなので普段は問題に
 // ならないが、HMR や将来の呼び出し経路の変化に対しても ADC 解決などの
 // 初期化コストを本当に必要になるまで発生させない、という安全側の設計にしておく。
-function getFirestore(): Firestore {
+export function getFirestore(): Firestore {
   if (!globalForFirestore.firestore) {
     globalForFirestore.firestore = createFirestore();
   }
@@ -59,7 +62,7 @@ function mapBatch(id: string, data: DocumentData): BatchRecord {
   };
 }
 
-function mapArticle(id: string, data: DocumentData): ArticleRecord {
+export function mapArticle(id: string, data: DocumentData): ArticleRecord {
   return {
     id: String(data.id ?? id),
     batchId: Number(data.batch_id),
@@ -89,9 +92,10 @@ export async function listBatchHeaders(limit = 30) {
   });
 }
 
-export async function listBatchesPage(limit: number, before?: Date) {
+export async function listBatchesPage(limit: number, before?: Date, since?: Date) {
   let query: Query = getFirestore().collection("batches").orderBy("executed_at", "desc");
   if (before) query = query.where("executed_at", "<", before);
+  if (since) query = query.where("executed_at", ">=", since);
   const snapshot = await query.limit(limit + 1).get();
   const records = snapshot.docs.map((doc) => mapBatch(doc.id, doc.data()));
   return { records: records.slice(0, limit), hasMore: records.length > limit };
@@ -120,4 +124,46 @@ export async function hydrateBatches(
 ): Promise<BatchWithArticles[]> {
   const articles = await listArticles(records.map((record) => record.id));
   return buildBatchesWithArticles(records, articles, sort);
+}
+
+const source = { listBatchesPage, hydrateBatches };
+
+export function listCategoryOptions(sort: CategorySort): Promise<string[]> {
+  return listCategoryOptionsFrom(source, sort);
+}
+
+export function listFilteredBatchesPage(
+  limit: number,
+  sort: CategorySort,
+  filters: ArticleFilters,
+  before?: Date,
+  since?: Date
+) {
+  return listFilteredBatchesPageFrom(source, limit, sort, filters, before, since);
+}
+
+/**
+ * バッチIDを指定してまとめて取得する。検索結果に表示日時を与えるための結合に使う。
+ *
+ * ドキュメントIDによる直接取得なので索引が要らず、`where("id", "in", ...)` の
+ * 30件制限にも掛からない。
+ */
+export async function getBatchesByIds(ids: number[]): Promise<Map<number, BatchRecord>> {
+  const result = new Map<number, BatchRecord>();
+  const unique = [...new Set(ids)];
+  if (unique.length === 0) return result;
+
+  const firestore = getFirestore();
+  const collection = firestore.collection("batches");
+  const CHUNK = 300;
+  for (let i = 0; i < unique.length; i += CHUNK) {
+    const refs = unique.slice(i, i + CHUNK).map((id) => collection.doc(String(id)));
+    const snapshots = await firestore.getAll(...refs);
+    for (const snapshot of snapshots) {
+      if (!snapshot.exists) continue;
+      const batch = mapBatch(snapshot.id, snapshot.data()!);
+      result.set(batch.id, batch);
+    }
+  }
+  return result;
 }

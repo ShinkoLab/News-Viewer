@@ -31,10 +31,12 @@ AI が収集・要約したニュース記事を閲覧するための Next.js �
 src/
   app/
     layout.tsx          # ルートレイアウト（ThemeRegistry をマウント）
-    page.tsx            # 最新バッチへリダイレクト
+    page.tsx            # バッチのフィード（カテゴリ・期間で絞り込み可）
     globals.css         # html/body に height:100% を付与（100vh レイアウト用）
     batches/[id]/
       page.tsx          # バッチ詳細ページ（Server Component）
+    search/
+      page.tsx          # 検索結果ページ（Server Component、関連度順）
     error.tsx           # エラーバウンダリ
     not-found.tsx       # 404 ページ
   components/
@@ -48,13 +50,21 @@ src/
     CategorySection.tsx # カテゴリ別カードグリッド
     CategorySortProvider.tsx # 並び順の Context と切り替え UI
     ArticleCard.tsx     # 個別記事カード
+    SearchBar.tsx       # アプリバーの検索入力（検索ページ）
+    SearchLaunchButton.tsx  # 検索ページへの導線（一覧・詳細ページ）
+    SearchResultGrid.tsx    # 検索結果のカードグリッド
     BackButton.tsx      # 戻るボタン（未使用の可能性あり）
     BatchListItem.tsx   # バッチリストアイテム（未使用の可能性あり）
   lib/
-    db.ts               # DB_BACKEND によるディスパッチャ（4関数を再エクスポート）
+    db.ts               # DB_BACKEND によるディスパッチャ（取得関数と型を再エクスポート）
     db.firestore.ts     # Firestore 実装（Cloud Run 本番）
     db.sqlite.ts        # SQLite 実装（Prisma、Docker Compose 自前ホスト用）
-    db.shared.ts        # 両実装が共有するクラスタ折り畳み・カテゴリ整列ロジック
+    db.shared.ts        # 両実装が共有するクラスタ折り畳み・カテゴリ整列・絞り込みロジック
+    search.ts           # 検索のディスパッチャ（Firestore = ハイブリッド、SQLite = キーワードのみ）
+    search.firestore.ts # ハイブリッド検索（ベクトル kNN + キーワード一致）
+    search.sqlite.ts    # SQLite 用のキーワード検索（embedding は呼ばない）
+    search.shared.ts    # 両実装が共有するスコア計算と結果の組み立て
+    embedding.ts        # 検索語のベクトル化とキャッシュ（Firestore 経路のみ）
     categorySort.ts     # カテゴリ並び順の純粋関数（サーバ/クライアント共用）
     categorySortServer.ts # Cookie と env から並び順を解決（サーバ専用）
     types.ts            # 画面へ渡すデータ型
@@ -75,8 +85,8 @@ src/
   `@prisma/adapter-better-sqlite3` 経由で読む。スキーマは `prisma/schema.prisma`
   （News-Summarizer 側 `outputs/database.py` の CREATE TABLE と手動で同期する必要がある）
 
-両実装とも同じ4関数（`listBatchHeaders` / `listBatchesPage` / `getBatch` /
-`hydrateBatches`）を提供し、クラスタ折り畳み・カテゴリ整列ロジックは
+両実装とも同じ関数（`listBatchHeaders` / `listBatchesPage`〈`since` で期間下限も指定可〉/
+`getBatch` / `hydrateBatches` / `listCategoryOptions` / `listFilteredBatchesPage`）を提供し、クラスタ折り畳み・カテゴリ整列ロジックは
 `src/lib/db.shared.ts` に一本化して共有する（バックエンドごとの実装差でロジックが
 ドリフトしないようにするため）。
 
@@ -105,6 +115,13 @@ src/
 | `FIRESTORE_EMULATOR_HOST` | エミュレータ利用時のみ |
 | `DATABASE_URL` | SQLite ファイルパス（`file:/path/to/news_summarizer.db` 形式、`DB_BACKEND=sqlite` のとき必須） |
 | `CATEGORY_ORDER` | カテゴリの既定表示順（カンマ区切り）。「カテゴリの表示順」を参照 |
+| `EMBEDDING_BASE_URL` | 検索語を embedding する OpenAI 互換エンドポイント |
+| `LLM_EMBEDDING_MODEL` | embedding モデル ID。**サマライザと一致必須** |
+| `EMBEDDING_DIMENSION` | 期待する次元数（既定 1536）。不一致を検知するためだけに使う |
+| `EMBEDDING_API_KEY` | 上記エンドポイントの API キー |
+
+`EMBEDDING_*` が未設定でも壊れない。意味検索だけが無効になり、キーワード一致に縮退する。
+**`DB_BACKEND=sqlite` では `EMBEDDING_*` を設定しても使わない**（意味検索は Firestore 構成だけの機能）。
 
 ## 重要な設計上の注意
 
@@ -175,6 +192,46 @@ Viewer が畳まないと同じニュースが記事の数だけカードとし�
 
 クラスタは「カテゴリ → group」で階層化されるため、カテゴリが割れているとクラスタも割れる。
 これはサマライザ側の `unify_group_categories()` が揃えている前提で、Viewer では補正しない。
+
+### セマンティック検索
+
+> **バックエンド別の挙動**: `src/lib/search.ts` が `DB_BACKEND` で振り分ける。
+> Firestore は以下のハイブリッド検索（`search.firestore.ts`）。**SQLite は意味検索なし・
+> キーワード一致のみ**（`search.sqlite.ts`）で、embedding エンドポイントは呼ばず、常に
+> `degraded: true` を返して UI の「キーワード一致のみ」の案内を出す。SQLite は LIKE による
+> タイトル・本文・keywords の部分一致で候補（最大200件、超えたら `truncated`）を集め、
+> スコアは Firestore と同じ `search.shared.ts` の `scoreCandidate`（ベクトル項は常に 0）で付ける。
+> カテゴリ・期間の `SearchFilters` と `SearchApiResponse` の形は共通。
+> 以降の記述は Firestore 構成の話。
+
+`keywords` は LLM が自由に生成するので表記ゆれが避けられず、完全一致だけでは検索にならない。
+サマライザが保存した記事ベクトル（`articleSummaries.embedding`）に対する kNN と、
+キーワード完全一致を合流させたハイブリッドで引く。
+
+- **`embedding` は Firestore の `Vector` 型でなければならない。** 素の `array<double>` の
+  ドキュメントは `findNearest` から**エラーなしで黙って除外される**。サマライザ側の
+  `outputs/firestore_database.py` が `Vector()` で包み、既存データは
+  `scripts/backfill_embedding_vectors.py` で変換済み
+- **embedding モデルはサマライザと一致していなければならない。** ズレてもAPIは成功し
+  kNN も結果を返すが、中身は無関係な記事になる（例外もログも出ない）。定義元は
+  `News-Summarizer/infra/variables.tf` ただ1つで、Job と Viewer の両方へ同じ変数から
+  注入される。`CATEGORY_ORDER` と同じ単一定義元の考え方
+- 距離は **COSINE**。サマライザのクラスタリング（`grouper.py` の `metric="cosine"`）と
+  同じ単位にして、`1 - distance` をそのまま「一致度」として表示できるようにする
+- **期間は事後フィルタ**。`findNearest` は不等式の事前フィルタを受け付けない。
+  加えて `batch_id` は epoch ミリ秒だが、SQLite から移行した過去バッチだけは連番なので
+  範囲比較に使えない。バッチを結合してから `executed_at` で絞る
+- **カテゴリは事前フィルタ**（等価なので可）。`category ASC + embedding VECTOR` の
+  複合ベクトルインデックスが要る
+- **部分一致はサーバ側でできない**。Firestore の文字列検索は前方一致の範囲クエリだけで、
+  語が文中に現れる日本語では役に立たない。ベクトル脚とキーワード脚で集めた
+  **候補集合に対してのみ**メモリ上で評価するので、候補の外にある部分一致は拾えない
+- **エミュレータは `findNearest` 非対応**。`FIRESTORE_EMULATOR_HOST` が設定されていれば
+  直近500件を読んで JS でコサイン距離を計算する総当たり経路に落ちる。本番では通らない
+- インデックス作成中やキー未設定でもページを落とさない。各脚は個別に try/catch して
+  縮退し、UI には「キーワード一致のみ」と出す
+- 並び順の切り替え UI は載せない。結果は関連度順のフラットな並びで、
+  カテゴリ単位の並べ替えという概念が無い
 
 ### テーマ（Android L / Material Design 1 スタイル）
 

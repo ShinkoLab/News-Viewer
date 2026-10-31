@@ -1,7 +1,8 @@
 import type { CategorySort } from "@/lib/categorySort";
+import type { ArticleFilters } from "@/lib/articleFilters";
 import type { BatchRecord } from "@/lib/db.shared";
 
-export type { BatchRecord } from "@/lib/db.shared";
+export type { ArticleRecord, BatchRecord } from "@/lib/db.shared";
 
 /**
  * データストアの選択。DB_BACKEND=sqlite で Docker Compose 自前ホスト構成の
@@ -39,9 +40,9 @@ export async function listBatchHeaders(limit?: number) {
   return impl.listBatchHeaders(limit);
 }
 
-export async function listBatchesPage(limit: number, before?: Date) {
+export async function listBatchesPage(limit: number, before?: Date, since?: Date) {
   const impl = await loadImpl();
-  return impl.listBatchesPage(limit, before);
+  return impl.listBatchesPage(limit, before, since);
 }
 
 export async function getBatch(batchId: number) {
@@ -52,4 +53,20 @@ export async function getBatch(batchId: number) {
 export async function hydrateBatches(records: BatchRecord[], sort?: CategorySort) {
   const impl = await loadImpl();
   return impl.hydrateBatches(records, sort);
+}
+
+export async function listCategoryOptions(sort: CategorySort) {
+  const impl = await loadImpl();
+  return impl.listCategoryOptions(sort);
+}
+
+export async function listFilteredBatchesPage(
+  limit: number,
+  sort: CategorySort,
+  filters: ArticleFilters,
+  before?: Date,
+  since?: Date
+) {
+  const impl = await loadImpl();
+  return impl.listFilteredBatchesPage(limit, sort, filters, before, since);
 }

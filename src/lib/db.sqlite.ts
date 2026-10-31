@@ -2,9 +2,12 @@ import { PrismaClient } from "@/generated/prisma/client";
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import type { BatchWithArticles } from "@/lib/types";
 import { DEFAULT_SORT_MODE, type CategorySort } from "@/lib/categorySort";
+import type { ArticleFilters } from "@/lib/articleFilters";
 import {
   buildBatchesWithArticles,
   compareArticleRecords,
+  listCategoryOptionsFrom,
+  listFilteredBatchesPageFrom,
   parseKeywords,
   FALLBACK_CATEGORY,
   type ArticleRecord,
@@ -38,7 +41,7 @@ const globalForPrisma = globalThis as unknown as {
 // だけなので普段は問題にならないが、DATABASE_URL 未設定のまま何らかの経路で
 // このモジュールが読み込まれても、実際にクエリを呼ぶまでは例外にならないように
 // しておく（db.firestore.ts の getFirestore() と同じ方針）。
-function getPrisma(): PrismaClient {
+export function getPrisma(): PrismaClient {
   if (!globalForPrisma.prisma) {
     globalForPrisma.prisma = createPrismaClient();
   }
@@ -75,7 +78,7 @@ function isRecoverableSqliteError(error: unknown): boolean {
   return RECOVERABLE_MESSAGE_SUBSTRINGS.some((substring) => error.message.includes(substring));
 }
 
-async function withMissingDbFallback<T>(run: () => Promise<T>, fallback: T): Promise<T> {
+export async function withMissingDbFallback<T>(run: () => Promise<T>, fallback: T): Promise<T> {
   try {
     return await run();
   } catch (error) {
@@ -100,7 +103,7 @@ function toBatchRecord(row: BatchRow): BatchRecord {
   };
 }
 
-type ArticleRow = {
+export type ArticleRow = {
   id: number;
   batch_id: number;
   category: string;
@@ -114,7 +117,7 @@ type ArticleRow = {
   feed_title: string | null;
 };
 
-function toArticleRecord(row: ArticleRow): ArticleRecord {
+export function toArticleRecord(row: ArticleRow): ArticleRecord {
   return {
     id: String(row.id),
     batchId: row.batch_id,
@@ -143,16 +146,16 @@ export async function listBatchHeaders(limit = 30) {
   }, []);
 }
 
-export async function listBatchesPage(limit: number, before?: Date) {
-  return withMissingDbFallback(() => listBatchesPageInternal(limit, before), {
+export async function listBatchesPage(limit: number, before?: Date, since?: Date) {
+  return withMissingDbFallback(() => listBatchesPageInternal(limit, before, since), {
     records: [],
     hasMore: false,
   });
 }
 
-async function listBatchesPageInternal(limit: number, before?: Date) {
+async function listBatchesPageInternal(limit: number, before?: Date, since?: Date) {
   let rows: BatchRow[];
-  if (before) {
+  if (before || since) {
     // SQLite の executed_at は News-Summarizer が CURRENT_TIMESTAMP で書き込む
     // "YYYY-MM-DD HH:MM:SS"（スペース区切り）形式の TEXT だが、Prisma の
     // typed API（下の findMany）に渡す JS Date は "...T...Z" 形式に直列化されて
@@ -164,9 +167,12 @@ async function listBatchesPageInternal(limit: number, before?: Date) {
     // 注意: $queryRaw が返す行の executed_at 列はローカルタイムゾーンとして
     // 誤って解釈される（typed API は正しく UTC 扱いする）ため、ここでは id の
     // 抽出だけに使い、実データは必ず typed API で取り直す。
+    const beforeIso = before ? before.toISOString() : null;
+    const sinceIso = since ? since.toISOString() : null;
     const idRows = await getPrisma().$queryRaw<{ id: number }[]>`
       SELECT id FROM batches
-      WHERE datetime(executed_at) < datetime(${before.toISOString()})
+      WHERE (${beforeIso} IS NULL OR datetime(executed_at) < datetime(${beforeIso}))
+        AND (${sinceIso} IS NULL OR datetime(executed_at) >= datetime(${sinceIso}))
       ORDER BY executed_at DESC, id DESC
       LIMIT ${limit + 1}
     `;
@@ -199,23 +205,28 @@ async function listArticles(batchIds: number[]): Promise<ArticleRecord[]> {
   return withMissingDbFallback(() => listArticlesInternal(batchIds), []);
 }
 
+/**
+ * 表示に必要な列。embedding は表示にも検索（SQLite はキーワードのみ）にも使わず、
+ * 記事数によってはサイズが大きいので読まない。
+ */
+export const ARTICLE_SELECT = {
+  id: true,
+  batch_id: true,
+  category: true,
+  group_id: true,
+  group_topic: true,
+  summary_title: true,
+  summary_text: true,
+  keywords: true,
+  original_url: true,
+  original_title: true,
+  feed_title: true,
+} as const;
+
 async function listArticlesInternal(batchIds: number[]): Promise<ArticleRecord[]> {
   const rows = await getPrisma().article_summaries.findMany({
     where: { batch_id: { in: batchIds } },
-    // embedding は表示に使わず、記事数によってはサイズが大きいので読まない。
-    select: {
-      id: true,
-      batch_id: true,
-      category: true,
-      group_id: true,
-      group_topic: true,
-      summary_title: true,
-      summary_text: true,
-      keywords: true,
-      original_url: true,
-      original_title: true,
-      feed_title: true,
-    },
+    select: ARTICLE_SELECT,
   });
   // カテゴリの表示順はここでは決めない（hydrateBatches が sortCategories で確定する）。
   // カテゴリのグルーピング自体は Map のキーが担うので、ここで必要なのは
@@ -229,4 +240,34 @@ export async function hydrateBatches(
 ): Promise<BatchWithArticles[]> {
   const articles = await listArticles(records.map((record) => record.id));
   return buildBatchesWithArticles(records, articles, sort);
+}
+
+const source = { listBatchesPage, hydrateBatches };
+
+export function listCategoryOptions(sort: CategorySort): Promise<string[]> {
+  return listCategoryOptionsFrom(source, sort);
+}
+
+export function listFilteredBatchesPage(
+  limit: number,
+  sort: CategorySort,
+  filters: ArticleFilters,
+  before?: Date,
+  since?: Date
+) {
+  return listFilteredBatchesPageFrom(source, limit, sort, filters, before, since);
+}
+
+/** バッチIDを指定してまとめて取得する。検索結果に表示日時を与えるための結合に使う。 */
+export async function getBatchesByIds(ids: number[]): Promise<Map<number, BatchRecord>> {
+  const result = new Map<number, BatchRecord>();
+  const unique = [...new Set(ids)];
+  if (unique.length === 0) return result;
+
+  const rows = await withMissingDbFallback(
+    () => getPrisma().batches.findMany({ where: { id: { in: unique } } }),
+    [] as BatchRow[]
+  );
+  for (const row of rows) result.set(row.id, toBatchRecord(row));
+  return result;
 }

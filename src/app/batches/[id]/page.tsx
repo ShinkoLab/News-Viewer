@@ -9,6 +9,7 @@ import CategoryList from "@/components/CategoryList";
 import CategorySortProvider from "@/components/CategorySortProvider";
 import BatchSidebar from "@/components/BatchSidebar";
 import SidebarLayout from "@/components/SidebarLayout";
+import SearchLaunchButton from "@/components/SearchLaunchButton";
 import { formatJapaneseDateTime } from "@/lib/format";
 
 export const dynamic = "force-dynamic";
@@ -33,7 +34,11 @@ export default async function BatchPage({ params }: Props) {
   const executedAt = new Date(batch.executedAt);
 
   return (
-    <SidebarLayout sidebar={<BatchSidebar batches={allBatches} currentId={batchId} />} showHomeButton>
+    <SidebarLayout
+      sidebar={<BatchSidebar batches={allBatches} currentId={batchId} />}
+      showHomeButton
+      appBarActions={<SearchLaunchButton />}
+    >
       <Box sx={{ mb: 3 }}>
         <Typography variant="h5" component="h1">
           {formatJapaneseDateTime(executedAt)}
