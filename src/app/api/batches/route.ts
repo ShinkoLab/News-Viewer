@@ -1,3 +1,4 @@
+import { parseBatchBoundary, type BatchBoundary } from "@/lib/batchCursor";
 import type { NextRequest } from "next/server";
 import { listFilteredBatchesPage } from "@/lib/db";
 import { getCategorySort } from "@/lib/categorySortServer";
@@ -8,8 +9,10 @@ const LIMIT = 3;
 
 export async function GET(request: NextRequest) {
   const beforeParam = request.nextUrl.searchParams.get("before");
-  const before = beforeParam ? new Date(beforeParam) : undefined;
-  if (before && Number.isNaN(before.getTime())) {
+  let before: BatchBoundary | undefined;
+  try {
+    before = beforeParam ? parseBatchBoundary(beforeParam) : undefined;
+  } catch {
     return Response.json({ error: "invalid before cursor" }, { status: 400 });
   }
 

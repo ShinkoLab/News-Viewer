@@ -92,3 +92,18 @@ Issue への対応は気まぐれです。
 
 本プロジェクトは [ISC](LICENSE) ライセンスの下で公開されています。
 利用しているサードパーティ製ライブラリとライセンスの一覧は、[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) を参照してください。
+
+## Stable batch pagination
+
+`/api/batches` returns an opaque `nextBefore` string. Pass it unchanged as
+`before`; do not parse it as a date. New cursors contain the exact timestamp
+and tie-breaking ID. SQLite orders by timestamp then numeric ID; Firestore
+orders by timestamp then document ID and retains nanoseconds. Legacy ISO-date
+`before` requests remain supported with their original strict timestamp cutoff.
+Malformed cursors return HTTP 400. Category scanning advances using the same
+keyset even when a scan window contains no matching category. No data migration
+or additional Firestore composite index is required: the document-name ordering
+matches the timestamp index's implicit descending document-name suffix.
+
+Run regression tests with `node --test tests/pagination.test.cjs` after `npm ci`.
+The Firestore tests use a local query double; production Firestore is not contacted.

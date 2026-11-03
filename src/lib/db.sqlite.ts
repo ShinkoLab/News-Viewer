@@ -1,3 +1,5 @@
+import { cursorDate } from "@/lib/batchCursor";
+import type { BatchBoundary } from "@/lib/batchCursor";
 import { PrismaClient } from "@/generated/prisma/client";
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import type { BatchWithArticles } from "@/lib/types";
@@ -145,14 +147,14 @@ export async function listBatchHeaders(limit = 30) {
   }, []);
 }
 
-export async function listBatchesPage(limit: number, before?: Date, since?: Date) {
+export async function listBatchesPage(limit: number, before?: BatchBoundary, since?: Date) {
   return withMissingDbFallback(() => listBatchesPageInternal(limit, before, since), {
     records: [],
     hasMore: false,
   });
 }
 
-async function listBatchesPageInternal(limit: number, before?: Date, since?: Date) {
+async function listBatchesPageInternal(limit: number, before?: BatchBoundary, since?: Date) {
   let rows: BatchRow[];
   if (before || since) {
     // SQLite の executed_at は News-Summarizer が CURRENT_TIMESTAMP で書き込む
@@ -166,11 +168,13 @@ async function listBatchesPageInternal(limit: number, before?: Date, since?: Dat
     // 注意: $queryRaw が返す行の executed_at 列はローカルタイムゾーンとして
     // 誤って解釈される（typed API は正しく UTC 扱いする）ため、ここでは id の
     // 抽出だけに使い、実データは必ず typed API で取り直す。
-    const beforeIso = before ? before.toISOString() : null;
+    const beforeIso = before ? (before instanceof Date ? before : cursorDate(before)).toISOString() : null;
+    const beforeId = before && !(before instanceof Date) ? Number(before.id) : null;
     const sinceIso = since ? since.toISOString() : null;
     const idRows = await getPrisma().$queryRaw<{ id: number }[]>`
       SELECT id FROM batches
-      WHERE (${beforeIso} IS NULL OR datetime(executed_at) < datetime(${beforeIso}))
+      WHERE (${beforeIso} IS NULL OR datetime(executed_at) < datetime(${beforeIso})
+        OR (${beforeId} IS NOT NULL AND datetime(executed_at) = datetime(${beforeIso}) AND id < ${beforeId}))
         AND (${sinceIso} IS NULL OR datetime(executed_at) >= datetime(${sinceIso}))
       ORDER BY executed_at DESC, id DESC
       LIMIT ${limit + 1}
@@ -263,7 +267,7 @@ export function listFilteredBatchesPage(
   limit: number,
   sort: CategorySort,
   filters: ArticleFilters,
-  before?: Date,
+  before?: BatchBoundary,
   since?: Date
 ) {
   return listFilteredBatchesPageFrom(source, limit, sort, filters, before, since);
