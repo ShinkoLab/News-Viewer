@@ -1,3 +1,4 @@
+import type { BatchBoundary } from "@/lib/batchCursor";
 import type { CategorySort } from "@/lib/categorySort";
 import type { ArticleFilters } from "@/lib/articleFilters";
 import type { BatchRecord } from "@/lib/db.shared";
@@ -40,7 +41,7 @@ export async function listBatchHeaders(limit?: number) {
   return impl.listBatchHeaders(limit);
 }
 
-export async function listBatchesPage(limit: number, before?: Date, since?: Date) {
+export async function listBatchesPage(limit: number, before?: BatchBoundary, since?: Date) {
   const impl = await loadImpl();
   return impl.listBatchesPage(limit, before, since);
 }
@@ -64,7 +65,7 @@ export async function listFilteredBatchesPage(
   limit: number,
   sort: CategorySort,
   filters: ArticleFilters,
-  before?: Date,
+  before?: BatchBoundary,
   since?: Date
 ) {
   const impl = await loadImpl();
