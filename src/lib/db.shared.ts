@@ -5,6 +5,7 @@ import { sortCategories, type CategorySort } from "@/lib/categorySort";
 import type { ArticleFilters } from "@/lib/articleFilters";
 
 export type BatchRecord = {
+  status?: "complete" | "partial" | "unknown";
   id: number;
   executedAt: Date;
   cursor?: BatchCursor;
@@ -75,6 +76,8 @@ function toSource(article: ArticleRecord): ArticleSource {
     originalTitle: article.originalTitle,
     originalUrl: article.originalUrl,
     feedTitle: article.feedTitle,
+    publishedAt: article.publishedAt ?? null,
+    storedAt: article.storedAt ?? null,
   };
 }
 
@@ -97,6 +100,8 @@ export function collapseCluster(members: ArticleRecord[]): Article {
 
   return {
     id: representative.id,
+    publishedAt: representative.publishedAt ?? null,
+    storedAt: representative.storedAt ?? null,
     summaryTitle: representative.summaryTitle,
     summaryText: representative.summaryText,
     keywords: representative.keywords,
@@ -161,6 +166,7 @@ export function buildBatchesWithArticles(
 
   return records.map((record) => ({
     id: record.id,
+    status: record.status ?? "unknown",
     executedAt: record.executedAt.toISOString(),
     totalArticles: record.totalArticles,
     digestText: record.digestText,

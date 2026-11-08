@@ -105,6 +105,8 @@ function toBatchRecord(row: BatchRow): BatchRecord {
 }
 
 export type ArticleRow = {
+  published_at?: Date | null;
+  created_at?: Date | null;
   id: number;
   batch_id: number;
   category: string;
@@ -122,6 +124,8 @@ export function toArticleRecord(row: ArticleRow): ArticleRecord {
   return {
     id: String(row.id),
     batchId: row.batch_id,
+    publishedAt: row.published_at?.toISOString() ?? null,
+    storedAt: row.created_at?.toISOString() ?? null,
     category: row.category ?? FALLBACK_CATEGORY,
     groupId: row.group_id,
     groupTopic: row.group_topic,
@@ -213,6 +217,8 @@ async function listArticles(batchIds: number[]): Promise<ArticleRecord[]> {
  * 記事数によってはサイズが大きいので読まない。
  */
 export const ARTICLE_SELECT = {
+  published_at: true,
+  created_at: true,
   id: true,
   batch_id: true,
   category: true,

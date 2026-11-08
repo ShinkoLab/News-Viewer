@@ -57,6 +57,11 @@ function asDate(value: unknown): Date {
   throw new Error("Firestore batch has an invalid executed_at value");
 }
 
+function optionalDate(value: unknown): string | null {
+  if (value == null) return null;
+  try { return asDate(value).toISOString(); } catch { return null; }
+}
+
 function mapBatch(id: string, data: DocumentData): BatchRecord {
   return {
     id: Number(data.id ?? id),
@@ -65,6 +70,7 @@ function mapBatch(id: string, data: DocumentData): BatchRecord {
       ? { seconds: data.executed_at.seconds, nanoseconds: data.executed_at.nanoseconds, id }
       : cursorFromDate(asDate(data.executed_at), id),
     totalArticles: Number(data.total_articles ?? 0),
+    status: data.status === "complete" || data.status === "partial" ? data.status : "unknown",
     digestText: typeof data.digest_text === "string" ? data.digest_text : null,
   };
 }
@@ -73,6 +79,8 @@ export function mapArticle(id: string, data: DocumentData): ArticleRecord {
   return {
     id: String(data.id ?? id),
     batchId: Number(data.batch_id),
+    publishedAt: optionalDate(data.published_at),
+    storedAt: optionalDate(data.created_at),
     category: String(data.category ?? FALLBACK_CATEGORY),
     groupId: typeof data.group_id === "number" ? data.group_id : null,
     groupTopic: typeof data.group_topic === "string" ? data.group_topic : null,
