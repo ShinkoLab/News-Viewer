@@ -204,11 +204,19 @@ export function createMcpHandler(core: AgentCore, env: Record<string, string | u
       return new Response(null, { status: 405, headers: { ...HEADERS, Allow: "POST" } });
     }
     if (!originAllowed(request, env)) return rpcError(null, -32600, "Origin not allowed", 403);
+    // Read the (capped) body before taking a budget slot, so a slow upload cannot hold one.
+    let message: unknown;
+    try {
+      message = JSON.parse(await readBodyCapped(request, MAX_BODY_BYTES));
+    } catch (error) {
+      if (error instanceof BodyTooLarge) return rpcError(null, -32600, "Request too large", 413);
+      return rpcError(null, -32700, "Parse error", 400);
+    }
     // Requests without a valid key get their own budget so anonymous traffic cannot use up
     // (or be hidden inside) the budget of real tool calls.
-    if (isAuthorized(core, request)) return dispatch(request);
+    if (isAuthorized(core, request)) return dispatch(request, message);
     try {
-      return await core.withAnonymousBudget(() => dispatch(request));
+      return await core.withAnonymousBudget(() => dispatch(request, message));
     } catch (error) {
       if (error instanceof ApiError && error.status === 429) {
         return rpcError(null, -32002, "Rate limited", 429, { "Retry-After": "60" });
@@ -217,14 +225,7 @@ export function createMcpHandler(core: AgentCore, env: Record<string, string | u
     }
   };
 
-  async function dispatch(request: Request): Promise<Response> {
-    let message: unknown;
-    try {
-      message = JSON.parse(await readBodyCapped(request, MAX_BODY_BYTES));
-    } catch (error) {
-      if (error instanceof BodyTooLarge) return rpcError(null, -32600, "Request too large", 413);
-      return rpcError(null, -32700, "Parse error", 400);
-    }
+  async function dispatch(request: Request, message: unknown): Promise<Response> {
     // JSON-RPC batching was removed from MCP (2025-06-18); accept single messages only.
     if (!isObject(message) || message.jsonrpc !== "2.0") return rpcError(null, -32600, "Invalid Request", 400);
 
