@@ -10,7 +10,9 @@ import type { Article, BatchWithArticles } from "@/lib/types";
  * エージェント向け読み取り API の共通部分。REST（/api/v1）と MCP（/mcp）の両方がここを使う。
  *
  * - 認証: `X-News-Api-Key` または `Authorization: Bearer <key>`（Muse などの MCP クライアントは後者）
- * - レート制限: プロセス単位で 60 件/分・同時 4 件。REST と MCP で **1 つの予算を共有** する
+ * - レート制限: プロセス単位で 60 件/分・同時 4 件。キー付きの呼び出しは REST と MCP で **1 つの予算を共有** する。
+ *   キーなしで届く MCP の要求（initialize / tools/list など）は別の予算で数える（匿名の大量送信で
+ *   正規の呼び出しの枠を食い潰させないため）
  * - 操作: 文字列の入力を検証して、REST の応答本文と同じ形のオブジェクトを返す。失敗は ApiError
  */
 
@@ -78,14 +80,25 @@ export function rejectUnknownInputs(input: RawInput, allowed: readonly string[])
 }
 
 type Budget = { windowStart: number; requests: number; active: number };
-function newBudget(): Budget { return { windowStart: 0, requests: 0, active: 0 }; }
+export type Budgets = { authorized: Budget; anonymous: Budget };
+export function newBudgets(): Budgets {
+  return { authorized: { windowStart: 0, requests: 0, active: 0 }, anonymous: { windowStart: 0, requests: 0, active: 0 } };
+}
 /**
- * 既定の予算は globalThis に 1 つだけ置く。Next.js は Route Handler ごとに別バンドルを作ることが
+ * 既定の予算は globalThis に 1 組だけ置く。Next.js は Route Handler ごとに別バンドルを作ることが
  * あり（/api/v1 と /mcp）、モジュール変数だと予算が 2 つになって上限が倍になるため。
  */
-const globalForBudget = globalThis as unknown as { __newsAgentBudget?: Budget };
-function sharedBudget(): Budget {
-  return (globalForBudget.__newsAgentBudget ??= newBudget());
+const globalForBudget = globalThis as unknown as { __newsAgentBudgets?: Budgets };
+function sharedBudgets(): Budgets {
+  return (globalForBudget.__newsAgentBudgets ??= newBudgets());
+}
+
+/** 予算を 1 件使って fn を実行する。超過は fn を呼ばずに 429。 */
+async function spend<T>(budget: Budget, time: number, fn: () => Promise<T>): Promise<T> {
+  if (time - budget.windowStart >= 60000) { budget.windowStart = time; budget.requests = 0; }
+  if (budget.requests >= RATE_LIMIT_PER_MINUTE || budget.active >= MAX_CONCURRENT) throw new ApiError(429, "rate_limited");
+  budget.requests++; budget.active++;
+  try { return await fn(); } finally { budget.active--; }
 }
 
 function suppliedKey(request: Request): string {
@@ -99,31 +112,35 @@ export function createAgentCore(
   deps: Dependencies = dependencies,
   env: Env = process.env,
   now = () => Date.now(),
-  budget: Budget = sharedBudget(),
+  budgets: Budgets = sharedBudgets(),
 ) {
-  /** キーの検証。設定が無効なら 503、合わなければ 401。DB には触れない。 */
-  function authenticate(request: Request) {
-    const key = env.NEWS_API_KEY;
-    if (!key || key.length < 32 || key.length > 256) throw new ApiError(503, "api_disabled");
-    const supplied = suppliedKey(request);
-    if (supplied.length > 256 || !timingSafeEqual(
-      createHash("sha256").update(key).digest(), createHash("sha256").update(supplied).digest()
-    )) throw new ApiError(401, "unauthorized");
-  }
-
   function backend() {
     const value = env.DB_BACKEND ?? "firestore";
     if (!["sqlite", "firestore"].includes(value)) throw new ApiError(503, "invalid_backend");
     return value;
   }
 
-  /** 予算を 1 件使って fn を実行する。超過は DB に触れずに 429。 */
-  async function withBudget<T>(fn: () => Promise<T>): Promise<T> {
-    const time = now();
-    if (time - budget.windowStart >= 60000) { budget.windowStart = time; budget.requests = 0; }
-    if (budget.requests >= RATE_LIMIT_PER_MINUTE || budget.active >= MAX_CONCURRENT) throw new ApiError(429, "rate_limited");
-    budget.requests++; budget.active++;
-    try { return await fn(); } finally { budget.active--; }
+  /**
+   * キーとバックエンド設定の検証。キーが無効な設定なら 503、合わなければ 401、
+   * DB_BACKEND が不正なら 503。DB には触れない。
+   */
+  function authorize(request: Request) {
+    const key = env.NEWS_API_KEY;
+    if (!key || key.length < 32 || key.length > 256) throw new ApiError(503, "api_disabled");
+    const supplied = suppliedKey(request);
+    if (supplied.length > 256 || !timingSafeEqual(
+      createHash("sha256").update(key).digest(), createHash("sha256").update(supplied).digest()
+    )) throw new ApiError(401, "unauthorized");
+    backend();
+  }
+
+  /** キー付きの呼び出しの予算（REST と MCP の tools/call で共有）。 */
+  function withBudget<T>(fn: () => Promise<T>): Promise<T> {
+    return spend(budgets.authorized, now(), fn);
+  }
+  /** キーなしで届いた MCP の要求の予算。 */
+  function withAnonymousBudget<T>(fn: () => Promise<T>): Promise<T> {
+    return spend(budgets.anonymous, now(), fn);
   }
 
   function context() {
@@ -213,7 +230,7 @@ export function createAgentCore(
     return batch;
   }
 
-  return { authenticate, backend, withBudget, ops };
+  return { authorize, withBudget, withAnonymousBudget, ops };
 }
 export type AgentCore = ReturnType<typeof createAgentCore>;
 
@@ -240,9 +257,8 @@ function queryInput(url: URL, allowed: readonly string[]): RawInput {
 export function createRestHandler(core: AgentCore) {
   return async function handle(request: Request, path: string[]): Promise<Response> {
     try {
-      core.authenticate(request);
+      core.authorize(request);
       if (request.method !== "GET") throw new ApiError(405, "method_not_allowed");
-      core.backend();
       return await core.withBudget(async () => {
         const url = new URL(request.url);
         if (url.search.length > 4096) throw new ApiError(400, "parameters_too_long");
@@ -277,7 +293,7 @@ export function createRestHandler(core: AgentCore) {
 
 /** One budget per process, independent of spoofable client IP headers. */
 export function createAgentApi(deps: Dependencies = dependencies, env: Env = process.env, now = () => Date.now()) {
-  return createRestHandler(createAgentCore(deps, env, now, newBudget()));
+  return createRestHandler(createAgentCore(deps, env, now, newBudgets()));
 }
 
 let defaultCore: AgentCore | undefined;
@@ -285,6 +301,7 @@ let defaultCore: AgentCore | undefined;
 export function agentCore(): AgentCore {
   return (defaultCore ??= createAgentCore());
 }
+let defaultRestHandler: ReturnType<typeof createRestHandler> | undefined;
 export function handleAgentApi(request: Request, path: string[]) {
-  return createRestHandler(agentCore())(request, path);
+  return (defaultRestHandler ??= createRestHandler(agentCore()))(request, path);
 }

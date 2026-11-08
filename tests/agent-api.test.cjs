@@ -175,12 +175,12 @@ test('SQLite search candidates use plain positional SQL (no cross-bundle Prisma.
 // ---------------------------------------------------------------- MCP (/mcp) and agent-only mode
 function mcpSetup(env = {}, overrides = {}) {
   const base = api(env, overrides);
-  const load = modules({ '@/lib/db': {}, '@/lib/search': {}, '../../package.json': { default: { version: 'test' } } },
-    { process: { env: {} }, Response, URL });
-  const { createAgentCore, createRestHandler } = load('@/lib/agentApi');
-  const core = createAgentCore(base.deps, { NEWS_API_KEY: secret, DB_BACKEND: 'sqlite', ...env },
-    () => fixtureDate.getTime(), { windowStart: 0, requests: 0, active: 0 });
-  return { calls: base.calls, mcp: load('@/lib/agentMcp').createMcpHandler(core), rest: createRestHandler(core) };
+  const load = modules({ '@/lib/db': {}, '@/lib/search': {} },
+    { process: { env: {} }, Response, URL, TextDecoder });
+  const { createAgentCore, createRestHandler, newBudgets } = load('@/lib/agentApi');
+  const fullEnv = { NEWS_API_KEY: secret, DB_BACKEND: 'sqlite', ...env };
+  const core = createAgentCore(base.deps, fullEnv, () => fixtureDate.getTime(), newBudgets());
+  return { calls: base.calls, mcp: load('@/lib/agentMcp').createMcpHandler(core, fullEnv), rest: createRestHandler(core) };
 }
 function rpc(method, params, { id = 1, notification = false, headers = { authorization: 'Bearer ' + secret }, raw } = {}) {
   return new Request('http://localhost/mcp', {
@@ -212,7 +212,7 @@ test('MCP initialize negotiates the protocol version and needs no key', async ()
     const body = await r.json();
     assert.equal(body.result.protocolVersion, expected);
     assert.deepEqual(body.result.capabilities, { tools: { listChanged: false } });
-    assert.equal(body.result.serverInfo.version, 'test');
+    assert.equal(body.result.serverInfo.version, 'v1');
   }
   assert.deepEqual(calls, []);
 });
@@ -337,4 +337,49 @@ test('agent-only proxy exposes only /mcp and /api/v1', () => {
     const off = load(env).proxy;
     for (const path of ['/', '/search', '/api/batches']) assert.equal(status(off, path), 'next', path);
   }
+});
+
+test('MCP caps the body while streaming, even without Content-Length', async () => {
+  const { mcp } = mcpSetup();
+  const declared = await mcp(new Request('http://localhost/mcp', { method: 'POST',
+    headers: { 'content-type': 'application/json', 'content-length': '70000' }, body: '{}' }));
+  assert.equal(declared.status, 413);
+  let pulled = 0;
+  const stream = new ReadableStream({ pull(controller) {
+    pulled++; controller.enqueue(new Uint8Array(16 * 1024).fill(32));
+    if (pulled > 100) controller.close();
+  } });
+  const chunked = await mcp(new Request('http://localhost/mcp', { method: 'POST', body: stream, duplex: 'half',
+    headers: { 'content-type': 'application/json' } }));
+  assert.equal(chunked.status, 413);
+  assert.ok(pulled <= 6, 'stopped reading soon after the limit, pulled ' + pulled);
+});
+
+test('MCP rejects browser Origins unless allow-listed', async () => {
+  const blocked = mcpSetup();
+  const r = await blocked.mcp(rpc('tools/list', {}, { headers: { origin: 'http://evil.example' } }));
+  assert.equal(r.status, 403);
+  const allowed = mcpSetup({ NEWS_MCP_ALLOWED_ORIGINS: 'https://a.example, http://evil.example' });
+  assert.equal((await allowed.mcp(rpc('tools/list', {}, { headers: { origin: 'http://evil.example' } }))).status, 200);
+});
+
+test('anonymous MCP traffic has its own budget and cannot exhaust keyed calls', async () => {
+  const { mcp, calls } = mcpSetup();
+  for (let i = 0; i < 60; i++) assert.equal((await mcp(rpc('tools/list', {}, { headers: {} }))).status, 200);
+  const anon = await mcp(rpc('tools/list', {}, { headers: {} }));
+  assert.equal(anon.status, 429); assert.equal(anon.headers.get('retry-after'), '60');
+  assert.equal((await mcp(callTool('list_categories', {}, { headers: {} }))).status, 429);
+  assert.equal((await mcp(rpc('tools/list', {}))).status, 200);
+  assert.equal((await toolPayload(await mcp(callTool('list_categories', {})))).isError, false);
+  assert.deepEqual(calls, ['categories']);
+});
+
+test('MCP null arguments: allowed for known names, rejected for unknown names', async () => {
+  const known = mcpSetup();
+  const ok = await toolPayload(await known.mcp(callTool('list_batches', { before: null, limit: null })));
+  assert.equal(ok.isError, false);
+  const unknown = mcpSetup();
+  const bad = await toolPayload(await unknown.mcp(callTool('list_batches', { limt: null })));
+  assert.equal(bad.data.error.code, 'invalid_parameters');
+  assert.deepEqual(unknown.calls, []);
 });
