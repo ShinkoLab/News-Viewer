@@ -35,6 +35,34 @@ export default function SidebarLayout({ sidebar, children, showHomeButton, appBa
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", height: "100vh" }}>
+      {/* iOS standalone WebKit samples fixed edge backgrounds for its native top blur.
+          Keep this empty: text clipping hides its pixels, not its opaque computed color.
+          11px exceeds WebKit's >10px sampling threshold; opacity:0 would defeat it.
+          Revisit/remove after affected iOS versions no longer need the workaround.
+          https://qiita.com/na-trium-144/items/0add98a80ca2391e3f17
+          https://bugs.webkit.org/show_bug.cgi?id=301756#c2 */}
+      <Box
+        aria-hidden="true"
+        data-ios-pwa-top-edge=""
+        sx={{
+          display: "none",
+          "@media (display-mode: standalone)": {
+            "@supports (-webkit-touch-callout: none) and ((background-clip: text) or (-webkit-background-clip: text))": {
+              display: "block",
+              position: "fixed",
+              top: 0,
+              left: 0,
+              width: "100%",
+              height: "11px",
+              zIndex: (theme) => theme.zIndex.appBar + 1,
+              bgcolor: "primary.main",
+              backgroundClip: "text",
+              WebkitBackgroundClip: "text",
+              pointerEvents: "none",
+            },
+          },
+        }}
+      />
       {/* Android L スタイルのアプリバー — MD1 elevation 4 の shadow を直接指定 */}
       <Box
         component="header"
