@@ -94,6 +94,41 @@ jobs:
       - name: Pin build timestamps to the commit time
         run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
       - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+      # attempt 2 stopped inside setup-trivy before scanning. Download failure is
+      # suspected; the old installer did not expose the failing URL/status.
+      # Fetch the same official release directly; never execute an unverified archive.
+      - name: Install checksum-verified Trivy
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$TRIVY_VERSION" = "v0.76.1"
+          case "$(uname -m)" in
+            x86_64)
+              asset="trivy_0.76.1_Linux-64bit.tar.gz"
+              expected="c7cbe3137fb8a48a17574bede3dd6beb16742d1e9772929940fc90082c39d9c0"
+              ;;
+            aarch64)
+              asset="trivy_0.76.1_Linux-ARM64.tar.gz"
+              expected="e174dff2a6dba5e3ae41f8d0537a6324405bd08132497340304c6b20e0f16a1f"
+              ;;
+            *) echo "::error::Unsupported Trivy architecture"; exit 1 ;;
+          esac
+          # SHA-256 values are pinned from the immutable official v0.76.1 release
+          # assets API. Update version, asset names and digests together.
+          install_dir=$(mktemp -d "$RUNNER_TEMP/news-trivy.XXXXXX")
+          archive="$install_dir/$asset"
+          url="https://github.com/aquasecurity/trivy/releases/download/$TRIVY_VERSION/$asset"
+          echo "Downloading $url"
+          curl --fail --show-error --silent --location --proto '=https' --proto-redir '=https' \
+            --retry 3 --retry-delay 2 --retry-max-time 180 \
+            --connect-timeout 15 --max-time 120 --output "$archive" "$url"
+          printf '%s  %s\n' "$expected" "$archive" | sha256sum --check --strict -
+          tar --no-same-owner -xzf "$archive" -C "$install_dir" trivy
+          chmod 0755 "$install_dir/trivy"
+          "$install_dir/trivy" --version
+          "$install_dir/trivy" --version | grep -Fx 'Version: 0.76.1'
+          rm "$archive"
+          echo "$install_dir" >> "$GITHUB_PATH"
       - name: Build image for scanning
         id: build
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
@@ -114,6 +149,7 @@ jobs:
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           version: ${{ env.TRIVY_VERSION }}
+          skip-setup-trivy: true
           image-ref: scan-target:ci
           scanners: secret
           format: table
@@ -123,6 +159,7 @@ jobs:
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           version: ${{ env.TRIVY_VERSION }}
+          skip-setup-trivy: true
           image-ref: scan-target:ci
           scanners: vuln
           severity: CRITICAL,HIGH
