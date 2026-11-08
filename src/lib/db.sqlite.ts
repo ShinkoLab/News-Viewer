@@ -120,12 +120,21 @@ export type ArticleRow = {
   feed_title: string | null;
 };
 
+/**
+ * 読めない日時は null にする。Prisma は解釈できない TEXT を Invalid Date として返し、
+ * そのまま toISOString() すると RangeError になる。ARTICLE_SELECT は一覧画面と検索も
+ * 共有しているので、1行の不正値でバッチ一覧全体を落とさない（Firestore の optionalDate と同じ扱い）。
+ */
+function optionalIso(value: Date | null | undefined): string | null {
+  return value && !Number.isNaN(value.getTime()) ? value.toISOString() : null;
+}
+
 export function toArticleRecord(row: ArticleRow): ArticleRecord {
   return {
     id: String(row.id),
     batchId: row.batch_id,
-    publishedAt: row.published_at?.toISOString() ?? null,
-    storedAt: row.created_at?.toISOString() ?? null,
+    publishedAt: optionalIso(row.published_at),
+    storedAt: optionalIso(row.created_at),
     category: row.category ?? FALLBACK_CATEGORY,
     groupId: row.group_id,
     groupTopic: row.group_topic,

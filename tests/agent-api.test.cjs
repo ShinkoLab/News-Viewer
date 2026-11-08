@@ -126,3 +126,16 @@ for (const backend of ['firestore', 'sqlite']) {
     assert.equal((await b.handle(req('batches/1/articles/missing'), ['batches', '1', 'articles', 'missing'])).status, 404);
   });
 }
+test('SQLite rows with unparseable dates map to null instead of throwing', () => {
+  const load = modules({ '@/generated/prisma/client': {}, '@prisma/adapter-better-sqlite3': {} },
+    { process: { env: {} } });
+  const record = load('@/lib/db.sqlite').toArticleRecord({
+    id: 7, batch_id: 1, category: 'synthetic', group_id: null, group_topic: null,
+    summary_title: 'summary', summary_text: 'synthetic text', keywords: '[]',
+    original_url: null, original_title: 'source', feed_title: null,
+    // Prisma returns Invalid Date for TEXT it cannot parse; toISOString() would throw RangeError.
+    published_at: new Date('not a date'), created_at: new Date(Number.NaN),
+  });
+  assert.equal(record.publishedAt, null);
+  assert.equal(record.storedAt, null);
+});
