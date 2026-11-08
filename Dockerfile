@@ -41,6 +41,9 @@ COPY . .
 RUN --mount=type=cache,target=/root/.cache/prisma \
     npx prisma generate
 
+# Exercise keyset pagination before building the production image.
+RUN node --test tests/pagination.test.cjs
+
 # BuildKit のキャッシュマウントを利用して Next.js のビルドキャッシュを永続化し、フルビルドを回避
 RUN --mount=type=cache,target=/app/.next/cache \
     npm run build

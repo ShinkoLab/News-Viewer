@@ -275,3 +275,18 @@ Cloud Build / Artifact Registry の流れ（`cloudbuild.yaml`）とは別の配�
 - Server Component はデフォルト。インタラクションや MUI Client Component への関数 props が必要な場合のみ `"use client"` を付与する
 - スタイリングは MUI `sx` prop のみ使用。CSS Modules や別途 CSS ファイルは使わない
 - 日本語 UI テキストはコンポーネント内にハードコード（i18n ライブラリなし）
+
+## Stable batch pagination
+
+`/api/batches` returns an opaque `nextBefore` string. Pass it unchanged as
+`before`; do not parse it as a date. New cursors contain the exact timestamp
+and tie-breaking ID. SQLite orders by timestamp then numeric ID; Firestore
+orders by timestamp then document ID and retains nanoseconds. Legacy ISO-date
+`before` requests remain supported with their original strict timestamp cutoff.
+Malformed cursors return HTTP 400. Category scanning advances using the same
+keyset even when a scan window contains no matching category. No data migration
+or additional Firestore composite index is required: the document-name ordering
+matches the timestamp index's implicit descending document-name suffix.
+
+Run regression tests with `node --test tests/pagination.test.cjs` after `npm ci`.
+The Firestore tests use a local query double; production Firestore is not contacted.

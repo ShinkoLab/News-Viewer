@@ -1,5 +1,9 @@
+import { cursorFromDate } from "@/lib/batchCursor";
+import type { BatchBoundary } from "@/lib/batchCursor";
 import {
   Firestore,
+  FieldPath,
+  Timestamp,
   type DocumentData,
   type Query,
 } from "@google-cloud/firestore";
@@ -57,6 +61,9 @@ function mapBatch(id: string, data: DocumentData): BatchRecord {
   return {
     id: Number(data.id ?? id),
     executedAt: asDate(data.executed_at),
+    cursor: typeof data.executed_at?.seconds === "number" && typeof data.executed_at?.nanoseconds === "number"
+      ? { seconds: data.executed_at.seconds, nanoseconds: data.executed_at.nanoseconds, id }
+      : cursorFromDate(asDate(data.executed_at), id),
     totalArticles: Number(data.total_articles ?? 0),
     digestText: typeof data.digest_text === "string" ? data.digest_text : null,
   };
@@ -92,9 +99,11 @@ export async function listBatchHeaders(limit = 30) {
   });
 }
 
-export async function listBatchesPage(limit: number, before?: Date, since?: Date) {
-  let query: Query = getFirestore().collection("batches").orderBy("executed_at", "desc");
-  if (before) query = query.where("executed_at", "<", before);
+export async function listBatchesPage(limit: number, before?: BatchBoundary, since?: Date) {
+  let query: Query = getFirestore().collection("batches")
+    .orderBy("executed_at", "desc").orderBy(FieldPath.documentId(), "desc");
+  if (before instanceof Date) query = query.where("executed_at", "<", before);
+  else if (before) query = query.startAfter(new Timestamp(before.seconds, before.nanoseconds), before.id);
   if (since) query = query.where("executed_at", ">=", since);
   const snapshot = await query.limit(limit + 1).get();
   const records = snapshot.docs.map((doc) => mapBatch(doc.id, doc.data()));
@@ -136,7 +145,7 @@ export function listFilteredBatchesPage(
   limit: number,
   sort: CategorySort,
   filters: ArticleFilters,
-  before?: Date,
+  before?: BatchBoundary,
   since?: Date
 ) {
   return listFilteredBatchesPageFrom(source, limit, sort, filters, before, since);

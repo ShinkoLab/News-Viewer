@@ -1,3 +1,5 @@
+import { cursorFromDate, encodeBatchCursor, type BatchCursor } from "@/lib/batchCursor";
+import type { BatchBoundary } from "@/lib/batchCursor";
 import type { Article, ArticleSource, BatchWithArticles } from "@/lib/types";
 import { sortCategories, type CategorySort } from "@/lib/categorySort";
 import type { ArticleFilters } from "@/lib/articleFilters";
@@ -5,6 +7,7 @@ import type { ArticleFilters } from "@/lib/articleFilters";
 export type BatchRecord = {
   id: number;
   executedAt: Date;
+  cursor?: BatchCursor;
   totalArticles: number;
   digestText: string | null;
 };
@@ -175,7 +178,7 @@ export function buildBatchesWithArticles(
 export type BatchSource = {
   listBatchesPage(
     limit: number,
-    before?: Date,
+    before?: BatchBoundary,
     since?: Date
   ): Promise<{ records: BatchRecord[]; hasMore: boolean }>;
   hydrateBatches(records: BatchRecord[], sort: CategorySort): Promise<BatchWithArticles[]>;
@@ -204,7 +207,7 @@ export async function listFilteredBatchesPageFrom(
   limit: number,
   sort: CategorySort,
   filters: ArticleFilters,
-  before?: Date,
+  before?: BatchBoundary,
   since?: Date
 ) {
   let cursor = before;
@@ -241,7 +244,8 @@ export async function listFilteredBatchesPageFrom(
         // 全カテゴリの文章なので、カテゴリ指定時には誤解を避けるため表示しない。
         digestText: filters.category ? null : batch.digestText,
       });
-      cursor = new Date(batch.executedAt);
+      cursor = page.records.find((record) => record.id === batch.id)?.cursor
+        ?? cursorFromDate(new Date(batch.executedAt), String(batch.id));
       if (matches.length === limit) {
         hasMore = page.hasMore || batch.id !== hydrated.at(-1)?.id;
         break;
@@ -249,7 +253,8 @@ export async function listFilteredBatchesPageFrom(
     }
 
     if (matches.length === limit) break;
-    cursor = page.records.at(-1)?.executedAt;
+    const last = page.records.at(-1);
+    cursor = last ? last.cursor ?? cursorFromDate(last.executedAt, String(last.id)) : undefined;
     if (!page.hasMore) {
       hasMore = false;
       break;
@@ -263,6 +268,6 @@ export async function listFilteredBatchesPageFrom(
   return {
     batches: matches,
     hasMore,
-    nextBefore: cursor?.toISOString() ?? null,
+    nextBefore: cursor ? (cursor instanceof Date ? cursor.toISOString() : encodeBatchCursor(cursor)) : null,
   };
 }
