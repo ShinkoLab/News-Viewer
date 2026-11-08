@@ -1,5 +1,7 @@
 /** クラスタに属する1記事分の出典。統合カードのソース一覧に並ぶ。 */
 export type ArticleSource = {
+  publishedAt?: string | null;
+  storedAt?: string | null;
   id: string;
   originalTitle: string;
   originalUrl: string | null;
@@ -7,6 +9,8 @@ export type ArticleSource = {
 };
 
 export type Article = {
+  publishedAt?: string | null;
+  storedAt?: string | null;
   id: string;
   summaryTitle: string;
   summaryText: string;
@@ -28,6 +32,7 @@ export type CategoryEntry = {
 };
 
 export type BatchWithArticles = {
+  status?: "complete" | "partial" | "unknown";
   id: number;
   executedAt: string; // ISO 8601 string — JSON境界を越えるため Date ではなく string
   totalArticles: number;

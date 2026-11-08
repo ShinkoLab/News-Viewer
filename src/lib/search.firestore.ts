@@ -63,6 +63,8 @@ const DISTANCE_FIELD = "vector_distance";
  * findNearest の応答とクラスタ補完の両方で使う。
  */
 const CLUSTER_FIELDS = [
+  "published_at",
+  "created_at",
   "id",
   "batch_id",
   "category",
