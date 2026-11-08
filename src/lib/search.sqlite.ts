@@ -1,4 +1,3 @@
-import { Prisma } from "@/generated/prisma/client";
 import { periodStart, type SearchFilters } from "@/lib/articleFilters";
 import {
   ARTICLE_SELECT,
@@ -45,35 +44,55 @@ function escapeLike(term: string): string {
 }
 
 /**
- * 検索語を含む記事の id を新しい順に返す。
+ * 検索語を含む記事の id を新しい順に返す SQL と、その位置パラメータを組み立てる。
  *
  * Prisma の `contains` は `%` `_` をエスケープしないため（"50%" や "snake_case" が
  * ほぼ全件に一致してしまう）、ESCAPE 付きの生 SQL で引く。期間は executed_at を
  * datetime() で正規化して比較する（prisma/schema.prisma の注意書き参照）。
+ *
+ * `Prisma.sql` / `Prisma.join` / `Prisma.empty` で断片を入れ子にしない。Next.js は
+ * Route Handler と Server Component で生成クライアントを別バンドルに入れるが、
+ * PrismaClient は globalThis で共有している（getPrisma()）。先に作った側とは別の
+ * バンドルの `Sql` クラスで組んだ断片は SQL として認識されず、値として `?` に
+ * バインドされて `near "?": syntax error` になる（起動後に最初に DB を読んだのが
+ * API か画面かで、もう一方の検索が壊れる）。文字列とプレーンな値だけを渡す
+ * `$queryRawUnsafe` なら、どちらのバンドルから呼んでも同じ SQL になる。
+ * 利用者の入力はすべて `?` のパラメータで渡し、SQL 文字列には連結しない。
  */
-async function findCandidateIds(terms: string[], filters: SearchFilters, since: Date | undefined) {
+export function buildCandidateQuery(
+  terms: string[],
+  filters: Pick<SearchFilters, "category">,
+  since: Date | undefined
+): { sql: string; params: (string | number)[] } {
+  const params: (string | number)[] = [];
   // keywords は JSON 配列の文字列（["AI", "OpenAI"]）で保存されている。素の部分一致を掛けると
   // `"` や `,` のような記号だけの検索語が全行に一致して候補を埋めてしまうので、
   // スコアで加点される「要素の完全一致」だけを `"語"` の形で引く。
-  const textMatch = Prisma.join(
-    terms.map((term) => {
+  const textMatch = terms
+    .map((term) => {
       const pattern = `%${escapeLike(term)}%`;
       const keywordPattern = `%${escapeLike(JSON.stringify(term))}%`;
-      return Prisma.sql`(summary_title LIKE ${pattern} ESCAPE '\\' OR summary_text LIKE ${pattern} ESCAPE '\\' OR keywords LIKE ${keywordPattern} ESCAPE '\\')`;
-    }),
-    " OR "
-  );
-  const period = since
-    ? Prisma.sql`AND batch_id IN (SELECT id FROM batches WHERE datetime(executed_at) >= datetime(${since.toISOString()}))`
-    : Prisma.empty;
-  const category = filters.category ? Prisma.sql`AND category = ${filters.category}` : Prisma.empty;
+      params.push(pattern, pattern, keywordPattern);
+      return "(summary_title LIKE ? ESCAPE '\\' OR summary_text LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\')";
+    })
+    .join(" OR ");
+  let sql = `SELECT id FROM article_summaries WHERE (${textMatch})`;
+  if (since) {
+    sql += " AND batch_id IN (SELECT id FROM batches WHERE datetime(executed_at) >= datetime(?))";
+    params.push(since.toISOString());
+  }
+  if (filters.category) {
+    sql += " AND category = ?";
+    params.push(filters.category);
+  }
+  sql += " ORDER BY batch_id DESC, id ASC LIMIT ?";
+  params.push(CANDIDATE_LIMIT + 1);
+  return { sql, params };
+}
 
-  const rows = await getPrisma().$queryRaw<{ id: number }[]>`
-    SELECT id FROM article_summaries
-    WHERE (${textMatch}) ${period} ${category}
-    ORDER BY batch_id DESC, id ASC
-    LIMIT ${CANDIDATE_LIMIT + 1}
-  `;
+async function findCandidateIds(terms: string[], filters: SearchFilters, since: Date | undefined) {
+  const { sql, params } = buildCandidateQuery(terms, filters, since);
+  const rows = await getPrisma().$queryRawUnsafe<{ id: number }[]>(sql, ...params);
   return rows.map((row) => row.id);
 }
 

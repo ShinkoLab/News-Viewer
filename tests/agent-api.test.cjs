@@ -139,3 +139,35 @@ test('SQLite rows with unparseable dates map to null instead of throwing', () =>
   assert.equal(record.publishedAt, null);
   assert.equal(record.storedAt, null);
 });
+test('SQLite search candidates use plain positional SQL (no cross-bundle Prisma.sql fragments)', () => {
+  const { createRequire } = require('node:module');
+  const SQLite = createRequire(require.resolve('@prisma/adapter-better-sqlite3'))('better-sqlite3');
+  const sqlite = new SQLite(':memory:');
+  sqlite.exec(`CREATE TABLE batches (id INTEGER PRIMARY KEY, executed_at TEXT);
+    CREATE TABLE article_summaries (id INTEGER PRIMARY KEY, batch_id INTEGER, category TEXT,
+      summary_title TEXT, summary_text TEXT, keywords TEXT);
+    INSERT INTO batches VALUES (1, '2026-10-01 00:00:00'), (2, '2026-11-07 00:00:00');
+    INSERT INTO article_summaries VALUES
+      (1, 1, 'A', 'old 50% story', '', '[]'),
+      (2, 2, 'A', 'new 50% story', '', '[]'),
+      (3, 2, 'B', 'new 50% other category', '', '[]'),
+      (4, 2, 'A', '5000 percent, not a literal match', '', '[]'),
+      (5, 2, 'A', 'keyword only', '', '["AI"]'),
+      (6, 2, 'A', 'keyword substring only', '', '["OpenAI"]');`);
+  const load = modules({ '@/generated/prisma/client': {}, '@prisma/adapter-better-sqlite3': {} },
+    { process: { env: {} } });
+  const { buildCandidateQuery } = load('@/lib/search.sqlite');
+  const ids = (terms, filters, since) => {
+    const { sql, params } = buildCandidateQuery(terms, filters, since);
+    for (const term of terms) assert.ok(!sql.includes(term), 'user input must be bound, not concatenated');
+    return sqlite.prepare(sql).all(...params).map((r) => r.id);
+  };
+  // `%` is matched literally (row 4 would match an unescaped LIKE); newest batch first.
+  assert.deepEqual(ids(['50%'], { category: null }, undefined), [2, 3, 1]);
+  assert.deepEqual(ids(['50%'], { category: 'A' }, new Date('2026-11-01T00:00:00Z')), [2]);
+  // Keywords match whole JSON elements only.
+  assert.deepEqual(ids(['AI'], { category: null }, undefined), [5]);
+  // Several terms are OR-ed together.
+  assert.deepEqual(ids(['old', 'keyword only'], { category: null }, undefined), [5, 1]);
+  sqlite.close();
+});
