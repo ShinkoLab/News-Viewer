@@ -39,6 +39,9 @@ src/
       page.tsx          # 検索結果ページ（Server Component、関連度順）
     error.tsx           # エラーバウンダリ
     not-found.tsx       # 404 ページ
+    api/v1/[...path]/route.ts # エージェント向け REST API（NEWS_API_KEY で有効化）
+    mcp/route.ts        # エージェント向け MCP 入口（Streamable HTTP・ステートレス）
+  proxy.ts              # NEWS_AGENT_ONLY=true のとき /mcp と /api/v1 以外を 404 にする
   components/
     ThemeRegistry.tsx   # MUI + Emotion SSR セットアップ（Client Component）
     SidebarLayout.tsx   # 2ペインレイアウト（アプリバー + ナビゲーションドロワー）
@@ -56,6 +59,8 @@ src/
     BackButton.tsx      # 戻るボタン（未使用の可能性あり）
     BatchListItem.tsx   # バッチリストアイテム（未使用の可能性あり）
   lib/
+    agentApi.ts         # エージェント API の共通部分（認証・共有レート制限・操作）と REST
+    agentMcp.ts         # MCP の JSON-RPC 処理とツール定義（agentApi の操作を呼ぶ）
     db.ts               # DB_BACKEND によるディスパッチャ（取得関数と型を再エクスポート）
     db.firestore.ts     # Firestore 実装（Cloud Run 本番）
     db.sqlite.ts        # SQLite 実装（Prisma、Docker Compose 自前ホスト用）

@@ -109,12 +109,14 @@ Run regression tests with `node --test tests/pagination.test.cjs` after `npm ci`
 The Firestore tests use a local query double; production Firestore is not contacted.
 
 
-## AI エージェント向け REST API（v1）
+## AI エージェント向け API（REST v1 と MCP）
 
 既存の DB_BACKEND 切り替えを使用する読み取り専用 API。DB の移行は不要です。
+同じ処理を2つの入口で公開します: REST（`/api/v1/*`）と MCP（`/mcp`、Meta Muse などのリモート MCP クライアント向け）。
 API キー未設定（または32文字未満）では503となり、DBにも検索サービスにも接続しません。
 API キーはサーバー環境変数 NEWS_API_KEY に設定し、リクエストの
-X-News-Api-Key ヘッダーに渡してください。キーをURL・Git・チャットに保存しないでください。
+`Authorization: Bearer <キー>` か `X-News-Api-Key: <キー>` ヘッダーに渡してください。
+キーをURL・Git・チャットに保存しないでください。
 全応答は Cache-Control: private, no-store。Cookie認証とCORSは提供しません。
 
 ### ローカル起動
@@ -179,32 +181,66 @@ SQLiteの既存リーダーはDB未作成・ロックを空結果へ縮退する
 meta.availability=not_verified の空結果や404は「ニュースが存在しない」確証には使えません。
 Firestoreの検索の縮退詳細はdegraded/truncatedで確認してください。
 
+### MCP（`/mcp`）
+
+Streamable HTTP のうち、状態を持たない JSON 応答だけを実装しています（POST のみ。
+GET / DELETE は405、`Mcp-Session-Id` は使いません）。対応プロトコル版は
+2025-11-25 / 2025-06-18 / 2025-03-26 / 2024-11-05 で、それ以外を要求されたら 2025-11-25 を返します。
+
+| ツール | 引数 | 返すもの |
+| --- | --- | --- |
+| `search_news` | `q`（必須）、`category`、`period` | REST の search と同じ |
+| `list_categories` | なし | REST の categories と同じ |
+| `list_batches` | `category`、`period`、`before`、`limit` | REST の batches と同じ |
+| `get_batch` | `batch_id`（必須） | REST の batches/{id} と同じ |
+| `get_article` | `batch_id`、`article_id`（どちらも必須） | REST の batches/{id}/articles/{articleId} と同じ |
+
+結果は REST と同じ JSON を `content[0].text` に入れて返します。
+`initialize` / `ping` / `tools/list` はツールの名前と説明しか返さないため、キーなしで応答します。
+データを読む `tools/call` はキーが必須で、合わなければ HTTP 401（`WWW-Authenticate` は付けません。
+付けると MCP クライアントが OAuth を始めようとするため）。上限超過は HTTP 429、
+入力誤りや見つからない場合は `isError: true` のツール結果に `{"error":{"code":"..."}}` を入れて返します。
+
+```bash
+curl -s http://127.0.0.1:3000/mcp -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H "Authorization: Bearer $NEWS_API_KEY" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_news","arguments":{"q":"AI"}}}'
+```
+
+Meta Muse には、カスタムコネクタの URL に `https://<公開ホスト>/mcp`、認証ヘッダーに
+`Authorization: Bearer <キー>`（入力欄がキーだけを求める場合はキーのみ）を登録します。
+キーは Muse の安全な入力欄にだけ入れ、チャットには貼らないでください。
+
+### エージェント専用モード（`NEWS_AGENT_ONLY=true`）
+
+この値を `true` にすると、`/mcp` と `/api/v1/*` 以外（画面・旧 `/api/batches`・静的ファイル）を
+すべて404にします（`src/proxy.ts`）。同じイメージを IAP なしで公開する「エージェント用」の
+サービスはこのモードで動かします。未設定なら何も変わりません（通常の Viewer）。
+**このモードなしで Viewer を IAP なしに公開しないでください**（画面と旧 API はキーで守られていません）。
+
 ### Cloud・接続・運用の境界
 
-Cloudでも同じコードを利用しますが、この変更でデプロイ・IAM・IAPは変更しません。
-既存ViewerのIAPを維持し、キーはSecret Manager等から実行時に渡します。
-X-News-Api-Key はIAP向けAuthorizationと分離しています。実際のIAP呼び出し認証や
-Muse/dot側が送れるヘッダーは別途接続検証が必要です。
+本番の Viewer は IAP の内側に残し、エージェント（Muse など）は IAP を通れないため、
+同じイメージを `NEWS_AGENT_ONLY=true` で動かす別の Cloud Run サービス（IAP なし）から接続します。
+その Terraform・手順は News-Summarizer リポジトリの `infra/` にあります。キーは Secret Manager から実行時に渡します。
 Firestoreにはニュース閲覧用の読み取り権限だけを与え、書き込みや管理権限を付けないでください。
 Firestore IAMだけでコレクションを限定できるとは限りません。APIはニュースDTOだけを返し、
 メールUIDL・outbox・ロック・embeddingを返しません。
 
 Firestoreの検索は NEWS_API_ALLOW_FIRESTORE_SEARCH=true を明示するまで403です。
 許可すると既存設定のEMBEDDING_BASE_URLに検索語が送信される可能性があります。
-SQLite検索はembeddingを呼びません。GETの検索語はプロキシ・Cloud Runのアクセスログに
-記録され得るため、ログのURLクエリ・X-News-Api-Keyをマスクし、機密情報を検索語に入れないでください。
+SQLite検索はembeddingを呼びません。REST の GET の検索語はプロキシ・Cloud Runのアクセスログに
+記録され得るため、機密情報を検索語に入れないでください（MCP は POST 本文で送るため URL には載りません）。
 APIの例外処理自体はキーや検索語をログに出しませんが、既存検索ライブラリのログも運用側で確認してください。
 
-制限はプロセスごと60リクエスト/分、同時4件（超過は429、Retry-After: 60）。
-再起動・複数インスタンスをまたぐ制限ではありません。公開接続には別途ゲートウェイで
-レート制限・HTTPS・/api/v1だけのルーティング・アクセスログのマスキングを設定してください。
+制限はプロセスごと60リクエスト/分、同時4件（超過は429、Retry-After: 60）で、REST と MCP で1つの枠を共有します。
+再起動・複数インスタンスをまたぐ制限ではないため、公開するサービスは最大1インスタンスにしてください。
 1ページのバッチ数は制限してもバッチ内の記事数は既存データ量に依存し、
 Firestoreの読取・クラスタ補完・embeddingの費用は発生します。
 
-MuseのCustom ConnectorにはこのAPI仕様を渡す想定です。クラウドのエージェントから
-PCのlocalhostは直接参照できません。接続経路・認証の検証と承認前にトンネルを公開しないでください。
-MCPアダプターはこのREST契約を使って追加可能ですが、本変更では未実装です。
-Muse/dotからの実接続成功はまだ確認していません。
+クラウドのエージェントから PC の localhost は直接参照できません。
+OAuth（OpenAI のコネクタなどが要求する方式）には対応していません。
 
 ### 検証
 
@@ -215,7 +251,8 @@ npx tsc --noEmit
 npm run build
 ```
 
-agent-api.test.cjsは認証・入力検証・外部検索の許可・エラー情報の秘匿・レート制限・
+agent-api.test.cjsは認証（X-News-Api-Key と Bearer）・入力検証・外部検索の許可・エラー情報の秘匿・
+REST と MCP で共有するレート制限・MCP のプロトコル処理とツール・エージェント専用モードの許可/拒否・
 Firestore/SQLiteの合成レコードからの日時と出典の返却を検証します。
 既存pagination.test.cjsはSQLiteインメモリDBとFirestoreクエリダブルでページングを検証します。
 実データ、実Firestore、外部embeddingは使用しません。
