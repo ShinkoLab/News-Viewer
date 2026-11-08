@@ -17,7 +17,7 @@ AI が収集・要約したニュース記事を閲覧するための Next.js �
 
 | レイヤー | ライブラリ / バージョン |
 |---|---|
-| フレームワーク | Next.js 16.2.3（App Router） |
+| フレームワーク | Next.js 16.4.4（App Router） |
 | UI | MUI v9（Material Design）+ Emotion |
 | DB | Firestore（`@google-cloud/firestore` 直接利用、Cloud Run 本番）または SQLite（Prisma 7 + `@prisma/adapter-better-sqlite3`、Docker Compose 自前ホスト用）。`DB_BACKEND` で切替 |
 | 言語 | TypeScript 5 / React 19 |
