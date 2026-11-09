@@ -244,7 +244,11 @@ jobs:
           pushed_config=$(docker buildx imagetools inspect --raw "${STAGING_IMAGE}@${PUSH_DIGEST}" | jq -r '.config.digest')
           echo "scanned: id=$scanned_id"
           echo "pushed:  manifest=$PUSH_DIGEST config=$pushed_config"
-          if [ -z "$PUSH_DIGEST" ] || [ "$pushed_config" != "$scanned_id" ]; then
+          # The classic image store reports the config digest as .Id; the containerd image
+          # store (now on some runner images) reports the manifest digest instead. Either one
+          # matching what the registry serves under PUSH_DIGEST proves it is the scanned image.
+          if [ -z "$PUSH_DIGEST" ] || [ -z "$pushed_config" ] || [ "$pushed_config" = "null" ] \
+            || { [ "$pushed_config" != "$scanned_id" ] && [ "$PUSH_DIGEST" != "$scanned_id" ]; }; then
             echo "::error::pushed image differs from the scanned image"
             exit 1
           fi
