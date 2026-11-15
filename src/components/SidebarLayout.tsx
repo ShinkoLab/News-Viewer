@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect } from "react";
 import Box from "@mui/material/Box";
+import type { Theme } from "@mui/material/styles";
 import IconButton from "@mui/material/IconButton";
 import MenuIcon from "@mui/icons-material/Menu";
 import HomeIcon from "@mui/icons-material/Home";
@@ -9,6 +10,23 @@ import Link from "next/link";
 
 // Drawer width as a shared constant to avoid duplication
 export const DRAWER_WIDTH = 240;
+
+const IOS_TOP_EDGE_SUPPORTS =
+  "@supports (-webkit-touch-callout: none) and ((background-clip: text) or (-webkit-background-clip: text))";
+
+const iosTopEdgeStyle = {
+  display: "block",
+  position: "fixed",
+  top: 0,
+  left: 0,
+  width: "100%",
+  height: "11px",
+  zIndex: (theme: Theme) => theme.zIndex.appBar + 1,
+  bgcolor: "primary.main",
+  backgroundClip: "text",
+  WebkitBackgroundClip: "text",
+  pointerEvents: "none",
+};
 
 type Props = {
   sidebar: React.ReactNode;
@@ -38,6 +56,8 @@ export default function SidebarLayout({ sidebar, children, showHomeButton, appBa
       {/* iOS standalone WebKit samples fixed edge backgrounds for its native top blur.
           Keep this empty: text clipping hides its pixels, not its opaque computed color.
           11px exceeds WebKit's >10px sampling threshold; opacity:0 would defeat it.
+          Home-screen apps without a manifest report display-mode: browser, so the
+          layout's inline script also marks <html data-ios-standalone> from navigator.standalone.
           Revisit/remove after affected iOS versions no longer need the workaround.
           https://qiita.com/na-trium-144/items/0add98a80ca2391e3f17
           https://bugs.webkit.org/show_bug.cgi?id=301756#c2 */}
@@ -46,21 +66,8 @@ export default function SidebarLayout({ sidebar, children, showHomeButton, appBa
         data-ios-pwa-top-edge=""
         sx={{
           display: "none",
-          "@media (display-mode: standalone)": {
-            "@supports (-webkit-touch-callout: none) and ((background-clip: text) or (-webkit-background-clip: text))": {
-              display: "block",
-              position: "fixed",
-              top: 0,
-              left: 0,
-              width: "100%",
-              height: "11px",
-              zIndex: (theme) => theme.zIndex.appBar + 1,
-              bgcolor: "primary.main",
-              backgroundClip: "text",
-              WebkitBackgroundClip: "text",
-              pointerEvents: "none",
-            },
-          },
+          "@media (display-mode: standalone)": { [IOS_TOP_EDGE_SUPPORTS]: iosTopEdgeStyle },
+          "html[data-ios-standalone] &": { [IOS_TOP_EDGE_SUPPORTS]: iosTopEdgeStyle },
         }}
       />
       {/* Android L スタイルのアプリバー — MD1 elevation 4 の shadow を直接指定 */}

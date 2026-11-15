@@ -30,7 +30,7 @@ AI が収集・要約したニュース記事を閲覧するための Next.js �
 ```
 src/
   app/
-    layout.tsx          # ルートレイアウト（ThemeRegistry をマウント）
+    layout.tsx          # ルートレイアウト（ThemeRegistry をマウント。iOS ホーム画面起動時に <html data-ios-standalone> を付けるインラインスクリプトを持ち、SidebarLayout の上端 blur 回避がこれに依存）
     page.tsx            # バッチのフィード（カテゴリ・期間で絞り込み可）
     globals.css         # html/body に height:100% を付与（100vh レイアウト用）
     batches/[id]/
