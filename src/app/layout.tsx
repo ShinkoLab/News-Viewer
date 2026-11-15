@@ -13,7 +13,18 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="ja">
+    // suppressHydrationWarning: the inline script below adds data-ios-standalone before hydration.
+    <html lang="ja" suppressHydrationWarning>
+      <head>
+        {/* iOS home-screen web apps opened without a manifest report display-mode: browser,
+            so (display-mode: standalone) never matches there. navigator.standalone still does.
+            Mark <html> before first paint so SidebarLayout's top-edge workaround applies. */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `try{if(navigator.standalone===true)document.documentElement.setAttribute("data-ios-standalone","")}catch(e){}`,
+          }}
+        />
+      </head>
       <body>
         <ThemeRegistry>{children}</ThemeRegistry>
       </body>
